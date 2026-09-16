@@ -1,6 +1,6 @@
 # AGENTS.md
 
-AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.8.3）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.8.5）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
 
 ## 测试 / Lint
 
