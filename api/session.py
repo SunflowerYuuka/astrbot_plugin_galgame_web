@@ -593,7 +593,7 @@ class SessionAPI:
     async def _send_handle_command_result(
         self, cmd, session, sid, raw_reply, pipeline_result
     ):
-        if cmd == "new":
+        if cmd in ("new", "reset"):
             new_cid = await self.context.conversation_manager.get_curr_conversation_id(
                 session["umo"]
             )

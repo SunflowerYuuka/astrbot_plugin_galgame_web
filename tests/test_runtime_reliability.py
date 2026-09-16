@@ -502,7 +502,8 @@ def test_tts_temp_cleanup_never_deletes_persistent_audio(tmp_path, monkeypatch):
     assert persistent.exists()
 
 
-def test_command_conversation_id_is_saved_after_sync(tmp_path, monkeypatch):
+@pytest.mark.parametrize("command", ["new", "reset"])
+def test_command_conversation_id_is_saved_after_sync(tmp_path, monkeypatch, command):
     async def scenario():
         sid = "c" * 32
         monkeypatch.setattr(session_helpers, "SESSIONS_DIR", tmp_path)
@@ -519,7 +520,7 @@ def test_command_conversation_id_is_saved_after_sync(tmp_path, monkeypatch):
             conversation_manager = ConversationManager()
 
         api.context = Context()
-        await api._send_handle_command_result("new", session, sid, "", {})
+        await api._send_handle_command_result(command, session, sid, "", {})
 
         saved = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
         assert saved["conv_id"] == "new-conversation-id"
