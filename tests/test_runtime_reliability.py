@@ -227,10 +227,31 @@ def test_atomic_json_failure_preserves_previous_file(tmp_path):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
-def test_command_audio_cleanup_waits_for_successful_session_save(monkeypatch):
+def test_command_parser_reports_prefix_and_name_without_side_effects():
+    api = object.__new__(session_module.SessionAPI)
+
+    class Context:
+        @staticmethod
+        def get_config():
+            return {"wake_prefix": ["/", "!"]}
+
+    api.context = Context()
+
+    assert api._send_parse_command("/reset") == ("/", "reset")
+    assert api._send_parse_command("/New") == ("/", "new")
+    assert api._send_parse_command("!del extra args") == ("!", "del")
+    assert api._send_parse_command("/") == ("/", "")
+    assert api._send_parse_command("hello") == (None, "")
+
+
+@pytest.mark.parametrize("command", ["/new", "/reset", "/del", "/RESET now"])
+def test_chat_input_rejects_conversation_commands(command):
     async def scenario():
         sid = "9" * 32
-        session = _session([{"audio_file": "voice.wav"}])
+        original_history = [{"role": "user", "content": "hi"}]
+        session = _session(list(original_history))
+        session["umo"] = "webchat:FriendMessage:webchat!tester!" + sid
+        session["conv_id"] = "conv-before"
         api = object.__new__(session_module.SessionAPI)
         api._sessions = {sid: session}
 
@@ -240,21 +261,20 @@ def test_command_audio_cleanup_waits_for_successful_session_save(monkeypatch):
                 return {"wake_prefix": ["/"]}
 
         api.context = Context()
-        cleaned = []
-        monkeypatch.setattr(session_helpers, "save_session", lambda *_args: False)
-        monkeypatch.setattr(
-            session_helpers,
-            "cleanup_unreferenced_audio",
-            lambda history, _sessions: cleaned.extend(history),
-        )
+        pipeline_calls = []
 
-        matched_prefix, command = await api._send_handle_command(
-            "/reset", session, sid
-        )
+        async def fake_pipeline(*args, **kwargs):
+            pipeline_calls.append(args)
+            return {"text": "", "audio": "", "audio_mime": "", "audio_file": ""}
 
-        assert (matched_prefix, command) == ("/", "reset")
-        assert session["history"] == []
-        assert cleaned == []
+        api._send_run_pipeline = fake_pipeline
+
+        result = await api._do_send(sid, command, b"")
+
+        assert result == {"error": session_module.BLOCKED_CHAT_COMMAND_NOTICE}
+        assert session["history"] == original_history
+        assert session["conv_id"] == "conv-before"
+        assert pipeline_calls == []
 
     asyncio.run(scenario())
 
@@ -500,32 +520,6 @@ def test_tts_temp_cleanup_never_deletes_persistent_audio(tmp_path, monkeypatch):
 
     assert not tts_module._cleanup_tts_temp_path(persistent)
     assert persistent.exists()
-
-
-@pytest.mark.parametrize("command", ["new", "reset"])
-def test_command_conversation_id_is_saved_after_sync(tmp_path, monkeypatch, command):
-    async def scenario():
-        sid = "c" * 32
-        monkeypatch.setattr(session_helpers, "SESSIONS_DIR", tmp_path)
-        session = _session()
-        session["umo"] = "webchat:FriendMessage:webchat!tester!" + sid
-        api = object.__new__(session_module.SessionAPI)
-        api._sessions = {sid: session}
-
-        class ConversationManager:
-            async def get_curr_conversation_id(self, _umo):
-                return "new-conversation-id"
-
-        class Context:
-            conversation_manager = ConversationManager()
-
-        api.context = Context()
-        await api._send_handle_command_result(command, session, sid, "", {})
-
-        saved = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
-        assert saved["conv_id"] == "new-conversation-id"
-
-    asyncio.run(scenario())
 
 
 def test_terminate_cancels_managed_tasks():

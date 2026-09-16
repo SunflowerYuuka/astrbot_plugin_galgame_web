@@ -14,6 +14,16 @@ from ..galgame_web import audio_utils, pipeline, tts
 MAX_TEXT_CHARS = 20_000
 MAX_SESSIONS = 200
 
+# Conversation lifecycle is owned by the session panel UI: users create and
+# delete conversations with the panel buttons, never with chat commands.
+# AstrBot's /new and /reset both create a new conversation (4.28+) and /del
+# deletes one, so forwarding them from the chat input would move or destroy the
+# conversation this session keeps syncing to.
+BLOCKED_CHAT_COMMANDS = ("new", "reset", "del")
+BLOCKED_CHAT_COMMAND_NOTICE = (
+    "聊天框不支持指令；请用右上角「会话切换」面板新建或删除对话。"
+)
+
 
 class SessionAPI:
     def _register_session_apis(self):
@@ -444,8 +454,17 @@ class SessionAPI:
             response_event.clear()
         session.pop("_last_resp_text", None)
 
-        # Step 2: Handle commands
-        matched_prefix, cmd = await self._send_handle_command(text, session, sid)
+        # Step 2: Parse the wake prefix and command name (no side effects)
+        matched_prefix, cmd = self._send_parse_command(text)
+
+        # Conversation commands belong to the session panel UI. Reject them here
+        # so the text never reaches AstrBot's command layer.
+        if cmd in BLOCKED_CHAT_COMMANDS:
+            logger.info(
+                f"[command] rejected '{cmd}' from chat input; "
+                "use the session panel instead"
+            )
+            return {"error": BLOCKED_CHAT_COMMAND_NOTICE}
 
         # Step 3: Save audio if present
         audio_path = self._send_save_audio(audio_raw, text)
@@ -481,19 +500,12 @@ class SessionAPI:
         if not raw_reply and text.strip() and not matched_prefix:
             raw_reply = await self._send_wait_for_llm(session, text)
 
-        # Step 6: Check if command - return early
-        is_command = bool(matched_prefix and cmd in ("new", "del", "reset"))
-        if is_command:
-            return await self._send_handle_command_result(
-                cmd, session, sid, raw_reply, pipeline_result
-            )
-
-        # Step 7: Extract emotions
+        # Step 6: Extract emotions
         clean_text, emotions, emotions_all = await self._send_extract_emotions(
             raw_reply, session
         )
 
-        # Step 8: Synthesize TTS (use background result if available)
+        # Step 7: Synthesize TTS (use background result if available)
         _bg_task = session.pop("_bg_tts_task", None)
         logger.debug(
             f"[tts] bg_task={'yes' if _bg_task else 'no'} "
@@ -509,7 +521,7 @@ class SessionAPI:
                 clean_text, emotions_all, text, matched_prefix, audio_b64
             )
 
-        # Step 9: Save and return
+        # Step 8: Save and return
         return await self._send_save_and_return(
             session,
             text,
@@ -530,30 +542,16 @@ class SessionAPI:
         session = self._sessions[sid]
         return session
 
-    async def _send_handle_command(self, text, session, sid):
+    def _send_parse_command(self, text):
+        """Return the matched wake prefix and command name, without side effects."""
         cfg = self.context.get_config()
         wake_prefixes = cfg.get("wake_prefix", ["/"])
         matched_prefix = next((p for p in wake_prefixes if text.startswith(p)), None)
         cmd = ""
         if matched_prefix:
-            cmd = (
-                text[len(matched_prefix) :].strip().split()[0].lower()
-                if text[len(matched_prefix) :].strip()
-                else ""
-            )
-            if cmd in ("reset", "new", "del"):
-                removed_history = []
-                async with session["_lock"]:
-                    removed_history = list(session.get("history", []))
-                    session["history"] = []
-                    session["current_emotion"] = "neutral"
-                from ..galgame_web.session_helpers import (
-                    cleanup_unreferenced_audio,
-                    save_session,
-                )
-
-                if save_session(self._sessions, sid):
-                    cleanup_unreferenced_audio(removed_history, self._sessions)
+            remainder = text[len(matched_prefix) :].strip()
+            if remainder:
+                cmd = remainder.split()[0].lower()
         return matched_prefix, cmd
 
     def _send_save_audio(self, audio_raw, text):
@@ -589,34 +587,6 @@ class SessionAPI:
         except asyncio.TimeoutError:
             pass
         return session.pop("_last_resp_text", "")
-
-    async def _send_handle_command_result(
-        self, cmd, session, sid, raw_reply, pipeline_result
-    ):
-        if cmd in ("new", "reset"):
-            new_cid = await self.context.conversation_manager.get_curr_conversation_id(
-                session["umo"]
-            )
-            if new_cid:
-                async with session["_lock"]:
-                    session["conv_id"] = new_cid
-        elif cmd == "del":
-            async with session["_lock"]:
-                session["conv_id"] = ""
-
-        from ..galgame_web.session_helpers import save_session
-
-        save_session(self._sessions, sid)
-        raw_reply = raw_reply.replace("\\n", "\n") if raw_reply else ""
-        return {
-            "reply": raw_reply or "",
-            "emotion": "neutral",
-            "emotions": [],
-            "audio": pipeline_result.get("audio", ""),
-            "audio_mime": pipeline_result.get("audio_mime", ""),
-            "audio_file": pipeline_result.get("audio_file", ""),
-            "audio_segments": [],
-        }
 
     async def _send_extract_emotions(self, raw_reply, session):
         from ..galgame_web.utils import (
