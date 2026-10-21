@@ -354,6 +354,7 @@ function switchToSession(sid) {
 }
 
 function resetConversationUi() {
+  hideLoading();
   if (typewriterTimer) clearTimeout(typewriterTimer);
   typewriterTimer = null;
   typewriterFullText = "";
@@ -901,6 +902,7 @@ function switchExpression(emotion) {
 /* ---- typewriter ---- */
 
 function typewriterAppend(text, emotionMap) {
+  hideLoading();
   clearExpressionTimers();
   var elText = el.dialogText;
   elText.classList.remove("text-reveal");
@@ -1075,6 +1077,24 @@ function playTTSAudio(base64data, mime) {
 
 /* ---- response lifecycle ---- */
 
+function showLoading() {
+  if (typewriterTimer) clearTimeout(typewriterTimer);
+  typewriterTimer = null;
+  clearExpressionTimers();
+  el.dialogText.classList.remove("text-reveal");
+  el.dialogText.classList.add("is-loading");
+  el.dialogText.setAttribute("aria-busy", "true");
+  el.dialogText.textContent = "少女祈祷中......";
+}
+
+function hideLoading() {
+  if (el.dialogText.classList.contains("is-loading")) {
+    el.dialogText.textContent = "";
+    el.dialogText.classList.remove("is-loading");
+  }
+  el.dialogText.setAttribute("aria-busy", "false");
+}
+
 function finishResponse() {
   var elText = el.dialogText;
   var cur = elText.querySelector(".cursor");
@@ -1084,17 +1104,20 @@ function finishResponse() {
 }
 
 function showError(msg) {
+  hideLoading();
   el.dialogText.textContent = msg;
   enableInput();
 }
 
 function disableInput() {
+  showLoading();
   el.userInput.disabled = true;
   el.sendBtn.disabled = true;
   el.micBtn.disabled = true;
 }
 
 function enableInput() {
+  hideLoading();
   el.userInput.disabled = false;
   el.sendBtn.disabled = false;
   el.micBtn.disabled = false;
@@ -1128,7 +1151,7 @@ function setupInput() {
 
 async function sendMessage(audioData) {
   var text = el.userInput.value.trim();
-  if ((!text && !audioData) || !sessionId) return;
+  if ((!text && !audioData) || !sessionId || el.userInput.disabled) return;
 
   el.userInput.value = "";
   disableInput();

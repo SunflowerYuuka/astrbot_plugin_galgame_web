@@ -4,6 +4,20 @@
   box-sizing: border-box;
 }
 
+#dialog-text.is-loading {
+  color: #b6cce6;
+  animation: prayer-loading 1.6s ease-in-out infinite;
+}
+
+@keyframes prayer-loading {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #dialog-text.is-loading { animation: none; }
+}
+
 html, body {
   width: 100vw;
   height: 100vh;
