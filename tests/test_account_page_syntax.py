@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.mark.parametrize("page", ["pool.html", "users.html"])
+@pytest.mark.parametrize("page", ["pool.html", "users.html", "register.html"])
 def test_inline_account_page_scripts_parse(page):
     node = shutil.which("node")
     if node is None:

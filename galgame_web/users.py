@@ -23,6 +23,10 @@ MAX_PASSWORD_LENGTH = 256
 PBKDF2_ITERATIONS = 210_000
 
 
+class UserExistsError(ValueError):
+    """The normalized username is already in use."""
+
+
 class UserStore:
     def __init__(self, path: pathlib.Path | None = None):
         self.path = pathlib.Path(path) if path is not None else USERS_PATH
@@ -168,7 +172,7 @@ class UserStore:
         with self._lock:
             data = self._load()
             if name in data["users"]:
-                raise ValueError("user already exists")
+                raise UserExistsError("user already exists")
             salt, digest, iterations = self._hash_password(password)
             now = time.time()
             data["users"][name] = {

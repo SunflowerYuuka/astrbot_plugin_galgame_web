@@ -1,4 +1,10 @@
 {
+  "web_registration_enabled": {
+    "description": "允许用户自助注册",
+    "type": "bool",
+    "default": true,
+    "hint": "登录页显示注册入口，注册成功后直接登录为普通用户，无需审核。黑白名单仍有效；管理员及保留账号名不能自助注册。首次使用需先用 web_password 初始化管理员。"
+  },
   "web_public_url": {
     "description": "外网网页链接（/galgame web）",
     "type": "string",

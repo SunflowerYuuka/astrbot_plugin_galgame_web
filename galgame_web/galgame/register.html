@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>注册账号 - AI Galgame</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at center,#141c2c 0%,#0a101c 100%); color: #dbe7f5; font: 15px/1.6 system-ui,sans-serif; }
+main { width: min(400px,100%); padding: 30px; border: 1px solid #34445b; border-radius: 12px; background: #141e30e6; }
+h1 { font-size: 22px; margin: 0; }
+p { color: #a9b9cf; }
+label { display: block; margin-top: 14px; }
+input, button { font: inherit; width: 100%; border: 1px solid #4a607d; border-radius: 8px; padding: 10px 12px; background: #23344d; color: inherit; }
+input { margin-top: 6px; }
+input:focus { outline: 2px solid #9cc4ea; outline-offset: 2px; }
+small { display: block; margin-top: 5px; color: #a9b9cf; }
+button { margin-top: 22px; cursor: pointer; background: #355479; }
+button:disabled { opacity: .5; cursor: wait; }
+a { color: #9cc4ea; }
+#error { color: #ffaaaa; min-height: 24px; overflow-wrap: anywhere; }
+.login { text-align: center; margin-bottom: 0; }
+</style>
+</head>
+<body><main>
+<h1>注册账号</h1>
+<p>注册成功后直接进入 Galgame，拥有自己的会话、收藏和偏好。</p>
+<form id="register-form">
+<label for="username">账号</label>
+<input id="username" name="username" type="text" minlength="1" maxlength="32" pattern="[A-Za-z][A-Za-z0-9_.\-]{0,31}" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus />
+<small>以字母开头，1–32 位字母、数字、下划线、点或短横线；账号不区分大小写。</small>
+<label for="password">密码</label>
+<input id="password" name="password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required />
+<label for="confirm-password">确认密码</label>
+<input id="confirm-password" name="confirm_password" type="password" minlength="8" maxlength="256" autocomplete="new-password" required />
+<button id="submit" type="submit">注册并登录</button>
+<p id="error" role="alert" aria-live="polite"></p>
+</form>
+<p class="login">已有账号？<a href="/login">返回登录</a></p>
+</main>
+<script>
+document.getElementById("register-form").addEventListener("submit", async function(event) {
+  event.preventDefault();
+  var error = document.getElementById("error");
+  var submit = document.getElementById("submit");
+  var username = document.getElementById("username").value.trim();
+  var password = document.getElementById("password").value;
+  var confirmPassword = document.getElementById("confirm-password").value;
+  error.textContent = "";
+  if (password !== confirmPassword) { error.textContent = "两次输入的密码不一致。"; return; }
+  submit.disabled = true;
+  submit.textContent = "正在注册…";
+  try {
+    var response = await fetch("/api/register", {
+      method: "POST", credentials: "same-origin",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({username: username, password: password, confirm_password: confirmPassword})
+    });
+    var data = await response.json().catch(function() { return {}; });
+    if (!response.ok) throw new Error(data.error || "注册失败，请稍后重试。");
+    window.location.replace("/");
+  } catch (err) {
+    error.textContent = err.message || "网络异常，请稍后重试。";
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "注册并登录";
+  }
+});
+</script>
+</body></html>

@@ -1,6 +1,13 @@
 # AGENTS.md
 
-AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.0）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.1）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+
+## 自助注册（v0.10.1）
+
+- 登录页链接 `/register`，页面 `galgame_web/galgame/register.html`；`POST /api/register` 由独立服务器处理，不经过 Dashboard 管理代理。
+- 配置 `web_registration_enabled` 默认开启；初始管理员必须已存在。注册固定 `is_admin=False`，禁止占用 `admin` 和 `web_admins` 中的名称，并执行普通用户黑白名单策略。
+- 注册成功签发登录 Cookie，返回 201，前端进入主页；未引入账号审批。公共池投稿仍必须审核。
+- `tests/test_registration.py` 用真实本地 HTTP 服务器验证注册、Cookie、限流、权限及关闭开关。
 
 ## 访问控制与公共池（v0.10.0）
 

@@ -1,6 +1,7 @@
 import base64
 import hmac
 import ipaddress
+import json
 import pathlib
 import secrets
 import threading
@@ -21,6 +22,7 @@ from .identity import (
     IDENTITY_USER_HEADER,
     sign_identity,
 )
+from .users import UserExistsError
 
 PLUGIN_NAME = "astrbot_plugin_galgame_web"
 PLUGIN_API_PREFIX = f"/api/plug/{PLUGIN_NAME}/"
@@ -132,6 +134,7 @@ background:rgba(91,140,196,.35);border:1px solid rgba(140,170,210,.25);border-ra
 <button type="submit">进入</button>
 <div class="err" id="err">账号或密码错误</div>
 </form>
+<!--REGISTER_LINK-->
 </div>
 <script>
 var p=new URLSearchParams(location.search);
@@ -479,8 +482,10 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
 
         if path == "/login":
             return self._serve_login()
+        if path in ("/register", "/register.html"):
+            return self._serve_registration()
         if path.startswith("/api/"):
-            if path == "/api/login":
+            if path in ("/api/login", "/api/register"):
                 self.send_error(405)
                 return
             if self._require_auth():
@@ -502,6 +507,8 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/login":
             return self._handle_login()
+        if path == "/api/register":
+            return self._handle_register()
         if path == "/api/logout":
             return self._handle_logout()
         if path.startswith("/api/"):
@@ -574,10 +581,95 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_login(self):
-        html = LOGIN_HTML.encode("utf-8")
+    def _registration_ready(self):
+        if GalgameWebHandler.access_config.get("web_registration_enabled", True) is not True:
+            return 403, "管理员已关闭自助注册。"
+        store = GalgameWebHandler.user_store
+        if store is None or store.admin_count() == 0:
+            return 503, "请管理员先设置 web_password 并重载插件，完成初始账号设置。"
+        return None
+
+    def _registration_response(self, status, data, cookie=None):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_register(self):
+        unavailable = self._registration_ready()
+        if unavailable:
+            return self._registration_response(unavailable[0], {"error": unavailable[1]})
+        if not self._reserve_login_attempt(self._client_ip(), "@register"):
+            return self._registration_response(429, {"error": "注册请求过于频繁，请一分钟后重试。"})
+        raw_body = self._read_body(MAX_LOGIN_BODY_BYTES)
+        if raw_body is None:
+            return
+        try:
+            data = json.loads(raw_body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return self._registration_response(400, {"error": "注册信息格式不正确。"})
+        if not isinstance(data, dict):
+            return self._registration_response(400, {"error": "注册信息格式不正确。"})
+        store = GalgameWebHandler.user_store
+        username = data.get("username")
+        password = data.get("password")
+        if not isinstance(username, str):
+            return self._registration_response(400, {"error": "账号必须为文字。"})
+        try:
+            username = store.validate_username(username)
+        except ValueError:
+            return self._registration_response(400, {"error": "账号须为 1–32 位字母、数字、下划线、点或短横线，并以字母开头。"})
+        try:
+            store.validate_password(password)
+        except ValueError:
+            return self._registration_response(400, {"error": "密码长度须为 8–256 位。"})
+        if password != data.get("confirm_password"):
+            return self._registration_response(400, {"error": "两次输入的密码不一致。"})
+        config = GalgameWebHandler.access_config
+        if username in {"admin"} | members(config, "web_admins"):
+            return self._registration_response(403, {"error": "此账号名由管理员保留，请选择其他名称。"})
+        if not can_use(config, "web", username, admin=False):
+            return self._registration_response(403, {"error": "该账号不符合当前黑白名单规则，请联系管理员。"})
+        try:
+            store.add(username, password, is_admin=False)
+        except UserExistsError:
+            return self._registration_response(409, {"error": "该账号已存在，请登录或更换名称。"})
+        except OSError:
+            logger.exception("Failed to persist self-registration")
+            return self._registration_response(500, {"error": "账号保存失败，请稍后重试。"})
+        GalgameWebHandler.auth_configured = True
+        token = _make_user_auth_token(GalgameWebHandler.auth_secret, username, int(time.time()))
+        return self._registration_response(
+            201, {"status": "ok", "username": username}, self._set_auth_cookie(token)
+        )
+
+    def _serve_registration(self):
+        unavailable = self._registration_ready()
+        if unavailable:
+            return self._registration_response(unavailable[0], {"error": unavailable[1]})
+        try:
+            body = (self.static_dir / "register.html").read_bytes()
+        except OSError:
+            self.send_error(500)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_login(self):
+        link = '' if self._registration_ready() else '<p style="margin:18px 0 0;text-align:center"><a href="/register" style="color:#9cc4ea">没有账号？注册账号</a></p>'
+        html = LOGIN_HTML.replace("<!--REGISTER_LINK-->", link).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(html)))
         self.end_headers()
         self.wfile.write(html)

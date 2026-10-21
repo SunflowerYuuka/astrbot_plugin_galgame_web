@@ -94,5 +94,5 @@ git diff --check
 - Dashboard embedded pages still act as the single Dashboard admin; only the standalone WebUI is multi-account.
 - Assets, BGM, and character config are shared.
 - Logout clears the browser cookie but does not revoke an already-issued token server-side; password changes do not invalidate old cookies (24h expiry).
-- No self-service registration or password reset; an admin manages accounts.
+- v0.10.1 adds optional self-service registration with immediate login; password resets remain managed by an admin.
 - The fork repository URL tracks its default branch `main`; the upstream repository is a separate update source.

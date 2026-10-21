@@ -64,10 +64,15 @@ http://localhost:6186
 ### 多账号
 
 1. 首次启动且 `users.json` 不存在时，插件用 `web_password` 创建管理员 `admin`。
-2. 登录后进入「设置 → 账号管理」，添加普通账号或管理员、重置密码、删除账号。
-3. 每个账号拥有独立的会话列表、对话历史、语音收藏和界面偏好（BGM/音量/字体）；素材与 BGM 仍为全站共享。
-4. 忘记管理员密码：备份并删除 `data/plugin_data/astrbot_plugin_galgame_web/users.json`，重启 AstrBot，会重新用 `web_password` 创建 `admin`；原 `admin` 名下的会话/收藏/偏好仍会保留。
-5. `web_password` 修改后不会自动修改已有 `admin` 密码，请用账号管理页重置。
+2. 登录页点击「没有账号？注册账号」，填写账号、密码和确认密码，注册成功后自动登录，无需管理员审核。新注册用户固定为普通账号。
+3. 管理员也可进入「设置 → 账号管理」，添加普通账号或管理员、重置密码、删除账号。
+4. 每个账号拥有独立的会话列表、对话历史、语音收藏和界面偏好（BGM/音量/字体）；素材与 BGM 仍为全站共享。
+5. 忘记管理员密码：备份并删除 `data/plugin_data/astrbot_plugin_galgame_web/users.json`，重启 AstrBot，会重新用 `web_password` 创建 `admin`；原 `admin` 名下的会话/收藏/偏好仍会保留。
+6. `web_password` 修改后不会自动修改已有 `admin` 密码，请用账号管理页重置。
+
+`web_registration_enabled` 默认 `true`。设置为 `false` 并重载插件可关闭自助注册，已存在账号仍可登录。注册入口为 `/register`；需要管理员已初始化。账号以字母开头，允许 1–32 位字母、数字、下划线、点和短横线，统一存为小写；密码为 8–256 位。
+
+自助注册遵守黑白名单：在白名单模式下，仅白名单内的普通用户名可注册；被拉黑的账号不能注册。`admin` 和配置 `web_admins` 中的名称由管理员保留，自助注册不能占用这些名称。注册不会自动添加白名单或授予管理员权限。
 
 ### 外网链接、黑白名单与管理员
 
@@ -112,6 +117,7 @@ http://localhost:6186
 | `web_host` | 独立 WebUI 监听地址 | 默认 `0.0.0.0`；无账号且无密码时自动回退 `127.0.0.1` |
 | `web_enabled` | 启用独立 WebUI | 默认 `true`，`false` = 仅 Dashboard 内嵌页 |
 | `web_password` | 首次启动的管理员密码 | 首次启动时创建 `admin`；之后在「设置 → 账号管理」维护账号 |
+| `web_registration_enabled` | 开放自助注册 | 默认 `true`；注册成功后自动登录为普通用户 |
 | `sprite_mode` | 立绘渲染模式 | **`single`**（推荐，VRM 尚不可用） |
 | `vrm_model` | VRM 3D 模型文件（`assets/` 下的 `.vrm`，仅 VRM 模式） | 留空自动匹配 |
 | `sprite_scale` | 立绘整体缩放倍数 | 默认 `1.0`，建议 0.5 ~ 2.0 |
