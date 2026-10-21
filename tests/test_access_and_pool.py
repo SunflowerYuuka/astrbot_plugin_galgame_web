@@ -84,6 +84,36 @@ def test_web_command_returns_configured_url_and_blocks_sender():
         assert "web_public_url" in asyncio.run(collect())[0]
 
 
+def test_web_command_custom_multiline_reply_keeps_access_control():
+    main = importlib.import_module(f"{PACKAGE}.main")
+    plugin = object.__new__(main.GalgamePlugin)
+    text = "网页入口：https://galgame.example.com\n使用 Cloudflare 转发，国内网络可能访问不稳定。\n打不开可稍后重试。"
+    plugin.config = {"web_command_reply": text, "web_public_url": "not-a-url"}
+
+    class Event:
+        def get_sender_id(self):
+            return "123"
+
+        def get_platform_name(self):
+            return "aiocqhttp"
+
+        def plain_result(self, value):
+            return value
+
+    async def collect():
+        return [item async for item in plugin.cmd_galgame(Event(), "web")]
+
+    assert asyncio.run(collect()) == [text]
+    plugin.config["web_command_reply"] = "仅文字说明，不包含网址也可以。"
+    assert asyncio.run(collect()) == [plugin.config["web_command_reply"]]
+    plugin.config["platform_blacklist"] = ["123"]
+    assert "无权" in asyncio.run(collect())[0]
+    plugin.config["platform_blacklist"] = []
+    plugin.config["web_command_reply"] = " \n "
+    plugin.config["web_public_url"] = "https://galgame.example.com"
+    assert asyncio.run(collect()) == ["AI Galgame 网页入口：\nhttps://galgame.example.com"]
+
+
 def test_pool_snapshot_requires_review_and_never_exposes_private_fields(tmp_path):
     module = importlib.import_module(f"{PACKAGE}.galgame_web.public_pool")
     store = module.PoolStore(tmp_path / "pool.json")

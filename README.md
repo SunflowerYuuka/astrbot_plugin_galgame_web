@@ -78,6 +78,16 @@ http://localhost:6186
 
 在 AstrBot 插件配置中填写 `web_public_url`，例如 `https://galgame.example.com`。发送 `/galgame web` 即可取得此链接；不会修改 Cloudflare Tunnel 配置。
 
+如需同时发送访问说明，在「/galgame web 自定义返回文本」（`web_command_reply`）中填写完整的多行回复，例如：
+
+```text
+Galgame 网页入口：https://galgame.example.com
+目前使用 Cloudflare 转发，国内网络访问可能不稳定。
+如果打不开，请稍后重试。
+```
+
+该字段非空时按填写内容原样发送，不限定为网址，也不会自动添加固定前缀。留空则继续使用 `web_public_url` 的默认回复。保存配置并重载插件后生效。
+
 | 用途 | 模式 | 黑名单 | 白名单 | 管理员名单 |
 |------|------|--------|--------|------------|
 | QQ、Telegram 等平台的 Galgame 指令 | `platform_access_mode` | `platform_blacklist` | `platform_whitelist` | `platform_admins` |

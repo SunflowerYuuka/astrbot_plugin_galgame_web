@@ -342,6 +342,10 @@ class GalgamePlugin(
             return
         public_url = str(self.config.get("web_public_url", "") or "").strip()
         if action.lower() == "web":
+            reply = self.config.get("web_command_reply", "")
+            if isinstance(reply, str) and reply.strip():
+                yield event.plain_result(reply)
+                return
             try:
                 parsed = urlsplit(public_url)
                 valid = (

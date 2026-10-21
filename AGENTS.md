@@ -1,6 +1,6 @@
 # AGENTS.md
 
-AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.2）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.3）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
 
 ## 自助注册（v0.10.1）
 
@@ -12,7 +12,7 @@ AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.2）。双�
 ## 访问控制与公共池（v0.10.0）
 
 - `galgame_web/access.py` 统一黑白名单及配置管理员判定；平台指令和网页账号分别配置，不自动绑定身份。
-- `/galgame web` 读取 `web_public_url`；`platform_*` 名单按用户 ID（或平台名:ID）检查。
+- `/galgame web` 优先原样发送非空 `web_command_reply` 多行文本，留空时读取 `web_public_url`；`platform_*` 名单按用户 ID（或平台名:ID）先行检查。
 - `web_*` 名单在登录、Cookie 验证及签名 API 身份解析中检查；`web_admins` 和账号管理员角色等效，黑名单始终优先。
 - `galgame_web/public_pool.py` 保存经过审核的文字快照；`api/pool.py` 提供 list/detail/submit/review/claim/delete。领取必须创建独立 AstrBot 对话并注入快照历史，失败时回滚。
 - `galgame_web/galgame/pool.html` 是独立 WebUI 入口；只分享 user/assistant 的 content，不复制私有音频和内部元数据。
