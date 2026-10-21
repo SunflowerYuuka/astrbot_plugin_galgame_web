@@ -1,4 +1,6 @@
+import base64
 import hmac
+import ipaddress
 import pathlib
 import secrets
 import threading
@@ -7,9 +9,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 from urllib.parse import parse_qs
 
 from astrbot.api import logger
+
+from .access import can_use, members
+from .identity import (
+    IDENTITY_SIG_HEADER,
+    IDENTITY_TS_HEADER,
+    IDENTITY_USER_HEADER,
+    sign_identity,
+)
 
 PLUGIN_NAME = "astrbot_plugin_galgame_web"
 PLUGIN_API_PREFIX = f"/api/plug/{PLUGIN_NAME}/"
@@ -35,8 +46,12 @@ ALLOWED_API_ROUTES = {
             "config",
             "favorites/list",
             "history",
+            "me",
             "prefs",
             "session/list",
+            "users/list",
+            "pool/list",
+            "pool/detail",
         }
     ),
     "POST": frozenset(
@@ -56,14 +71,27 @@ ALLOWED_API_ROUTES = {
             "send",
             "session/delete",
             "session/init",
+            "users/add",
+            "users/delete",
+            "users/password",
+            "pool/submit",
+            "pool/review",
+            "pool/claim",
+            "pool/delete",
         }
     ),
 }
 
 
-def resolve_web_bind_host(configured_host: str, password: str) -> str:
+def resolve_web_bind_host(
+    configured_host: str, password: str, auth_configured: bool = False
+) -> str:
     host = str(configured_host or "0.0.0.0").strip() or "0.0.0.0"
-    if not password and host.lower() not in ("127.0.0.1", "localhost"):
+    if (
+        not password
+        and not auth_configured
+        and host.lower() not in ("127.0.0.1", "localhost")
+    ):
         return "127.0.0.1"
     return host
 
@@ -85,6 +113,7 @@ border-radius:10px;padding:32px 28px;box-shadow:0 8px 48px rgba(0,0,0,.4)}
 .login-box input{width:100%;padding:10px 14px;font-size:15px;color:#dbe7f5;
 background:rgba(255,255,255,.06);border:1px solid rgba(140,170,210,.15);border-radius:8px;outline:none;transition:border .2s}
 .login-box input:focus{border-color:rgba(91,140,196,.45)}
+.login-box input + label{margin-top:12px}
 .login-box button{width:100%;margin-top:18px;padding:12px;font-size:15px;font-weight:600;color:#eaf2fb;
 background:rgba(91,140,196,.35);border:1px solid rgba(140,170,210,.25);border-radius:8px;cursor:pointer;transition:background .2s}
 .login-box button:hover{background:rgba(120,165,215,.45)}
@@ -94,12 +123,14 @@ background:rgba(91,140,196,.35);border:1px solid rgba(140,170,210,.25);border-ra
 <body>
 <div class="login-box">
 <h1>AI Galgame 虚拟伙伴</h1>
-<p>请输入访问密码</p>
+<p>请输入账号和密码</p>
 <form method="post" action="/api/login">
+<label for="username">账号</label>
+<input id="username" type="text" name="username" autofocus autocapitalize="none" autocomplete="username" placeholder="输入账号..."/>
 <label for="pwd">密码</label>
-<input id="pwd" type="password" name="password" autofocus placeholder="输入密码..."/>
+<input id="pwd" type="password" name="password" autocomplete="current-password" placeholder="输入密码..."/>
 <button type="submit">进入</button>
-<div class="err" id="err">密码错误</div>
+<div class="err" id="err">账号或密码错误</div>
 </form>
 </div>
 <script>
@@ -140,19 +171,41 @@ def _make_auth_token(secret: str | bytes, ts: int) -> str:
     return f"{ts}:{h}"
 
 
-def _check_auth_token(secret: str | bytes, token: str, max_age: int = 86400) -> bool:
+def _make_user_auth_token(secret: str | bytes, username: str, ts: int) -> str:
+    encoded = base64.urlsafe_b64encode(username.encode("utf-8")).decode("ascii")
+    encoded = encoded.rstrip("=")
+    message = f"{username}:{ts}".encode("utf-8")
+    h = hmac.new(_secret_bytes(secret), message, "sha256").hexdigest()
+    return f"{encoded}:{ts}:{h}"
+
+
+def _check_auth_token(
+    secret: str | bytes, token: str, max_age: int = 86400
+) -> str | None:
     try:
-        parts = token.split(":", 1)
-        ts = int(parts[0])
+        parts = token.split(":")
+        if len(parts) == 2:
+            username = "admin"
+            ts = int(parts[0])
+            signature = parts[1]
+            message = str(ts).encode()
+        elif len(parts) == 3:
+            padding = "=" * (-len(parts[0]) % 4)
+            username = base64.urlsafe_b64decode(parts[0] + padding).decode("utf-8")
+            ts = int(parts[1])
+            signature = parts[2]
+            message = f"{username}:{ts}".encode("utf-8")
+        else:
+            return None
         age = int(time.time()) - ts
         if age < 0 or age > max_age:
-            return False
+            return None
         expected = hmac.new(
-            _secret_bytes(secret), str(ts).encode(), "sha256"
+            _secret_bytes(secret), message, "sha256"
         ).hexdigest()
-        return hmac.compare_digest(parts[1], expected)
-    except (ValueError, IndexError):
-        return False
+        return username if hmac.compare_digest(signature, expected) else None
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return None
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
@@ -219,6 +272,10 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
     jwt_token: str = ""
     jwt_token_factory = None
     web_password: str = ""
+    user_store = None
+    access_config: ClassVar[dict] = {}
+    auth_configured: bool = False
+    audio_owner_check = None
     auth_secret: bytes = secrets.token_bytes(32)
     _login_failures: dict[str, list[float]] = {}
     _login_lock = threading.Lock()
@@ -255,7 +312,7 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("Content-Security-Policy", "frame-ancestors 'self'")
         super().end_headers()
 
@@ -308,7 +365,7 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
         )
 
     def _host_ok(self) -> bool:
-        if GalgameWebHandler.web_password:
+        if GalgameWebHandler.auth_configured or GalgameWebHandler.web_password:
             return True
         raw_host = self.headers.get("Host", "").strip()
         if not raw_host:
@@ -319,29 +376,58 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
             return False
         return (hostname or "").lower() in ("127.0.0.1", "localhost", "::1")
 
-    def _reserve_login_attempt(self, client_ip: str) -> bool:
+    @staticmethod
+    def _login_key(client_ip: str, username: str = "") -> str:
+        name = str(username or "").strip().lower()
+        return f"{name}:{client_ip}" if name else client_ip
+
+    def _reserve_login_attempt(self, client_ip: str, username: str = "") -> bool:
+        key = GalgameWebHandler._login_key(client_ip, username)
         now = time.monotonic()
         with GalgameWebHandler._login_lock:
             recent = [
                 ts
-                for ts in GalgameWebHandler._login_failures.get(client_ip, [])
+                for ts in GalgameWebHandler._login_failures.get(key, [])
                 if now - ts < LOGIN_WINDOW_SECONDS
             ]
             if len(recent) >= MAX_LOGIN_FAILURES:
-                GalgameWebHandler._login_failures[client_ip] = recent
+                GalgameWebHandler._login_failures[key] = recent
                 return False
             recent.append(now)
-            GalgameWebHandler._login_failures[client_ip] = recent
+            GalgameWebHandler._login_failures[key] = recent
             return True
 
-    def _clear_login_failures(self, client_ip: str):
+    def _clear_login_failures(self, client_ip: str, username: str = ""):
+        key = self._login_key(client_ip, username)
         with GalgameWebHandler._login_lock:
-            GalgameWebHandler._login_failures.pop(client_ip, None)
+            GalgameWebHandler._login_failures.pop(key, None)
 
-    def _auth_ok(self) -> bool:
-        pwd = GalgameWebHandler.web_password
-        if not pwd:
+    def _client_ip(self) -> str:
+        remote = self.client_address[0] if self.client_address else "unknown"
+        if remote in ("127.0.0.1", "::1"):
+            candidate = (self.headers.get("CF-Connecting-IP") or "").strip()
+            if candidate:
+                try:
+                    return str(ipaddress.ip_address(candidate))
+                except ValueError:
+                    pass
+        return remote
+
+    def _is_https(self) -> bool:
+        forwarded = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+        if forwarded == "https":
             return True
+        visitor = (self.headers.get("CF-Visitor") or "").lower()
+        return '"https"' in visitor
+
+    def _auth_ok(self) -> str | None:
+        store = GalgameWebHandler.user_store
+        has_users = bool(store and store.has_users())
+        if not has_users and not GalgameWebHandler.web_password:
+            if GalgameWebHandler.auth_configured:
+                return None
+            self.current_user = "admin"
+            return "admin" if self._access_allowed("admin") else None
         cookie = self.headers.get("Cookie", "")
         token = ""
         for part in cookie.split(";"):
@@ -349,7 +435,25 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
             if part.startswith("galgame_auth="):
                 token = part.split("=", 1)[1].strip()
                 break
-        return _check_auth_token(GalgameWebHandler.auth_secret, token)
+        username = _check_auth_token(GalgameWebHandler.auth_secret, token)
+        if not username:
+            return None
+        if has_users:
+            username = store.normalize(username)
+            if not store.has_user(username):
+                return None
+        elif username != "admin":
+            return None
+        if not self._access_allowed(username):
+            return None
+        self.current_user = username
+        return username
+
+    def _access_allowed(self, username):
+        store = GalgameWebHandler.user_store
+        config = GalgameWebHandler.access_config
+        admin = username in members(config, "web_admins") or bool(store and store.is_admin(username))
+        return can_use(config, "web", username, admin=admin)
 
     def _require_auth(self) -> bool:
         if self._auth_ok():
@@ -398,39 +502,77 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/login":
             return self._handle_login()
+        if path == "/api/logout":
+            return self._handle_logout()
         if path.startswith("/api/"):
             if self._require_auth():
                 return
             return self._proxy("POST")
         self.send_error(404)
 
+    def _set_auth_cookie(self, token: str) -> str:
+        cookie = (
+            f"galgame_auth={token}; Path=/; HttpOnly; SameSite=Strict; "
+            "Max-Age=86400"
+        )
+        if self._is_https():
+            cookie += "; Secure"
+        return cookie
+
     def _handle_login(self):
-        client_ip = self.client_address[0] if self.client_address else "unknown"
-        if not self._reserve_login_attempt(client_ip):
-            self._send_json_error(429, "too many login attempts")
-            return
+        client_ip = self._client_ip()
         raw_body = self._read_body(MAX_LOGIN_BODY_BYTES)
         if raw_body is None:
             return
         body = raw_body.decode("utf-8", errors="replace")
         params = parse_qs(body)
+        username = (params.get("username", [""])[0] or "").strip().lower()[:64]
         submitted = params.get("password", [""])[0]
-        pwd = GalgameWebHandler.web_password
-        if pwd and hmac.compare_digest(submitted, pwd):
-            self._clear_login_failures(client_ip)
-            ts = int(time.time())
-            token = _make_auth_token(GalgameWebHandler.auth_secret, ts)
+        if not self._reserve_login_attempt(client_ip, username):
+            self._send_json_error(429, "too many login attempts")
+            return
+
+        store = GalgameWebHandler.user_store
+        has_users = bool(store and store.has_users())
+        authenticated = False
+        if has_users:
+            authenticated = store.verify(username, submitted)
+            if authenticated:
+                username = store.normalize(username)
+        else:
+            pwd = GalgameWebHandler.web_password
+            authenticated = (
+                bool(pwd)
+                and username in ("", "admin")
+                and hmac.compare_digest(submitted, pwd)
+            )
+            username = "admin"
+
+        if authenticated and self._access_allowed(username):
+            self._clear_login_failures(client_ip, username)
+            token = _make_user_auth_token(
+                GalgameWebHandler.auth_secret, username, int(time.time())
+            )
             self.send_response(302)
             self.send_header("Location", "/")
-            self.send_header(
-                "Set-Cookie",
-                f"galgame_auth={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400",
-            )
+            self.send_header("Set-Cookie", self._set_auth_cookie(token))
             self.end_headers()
         else:
             self.send_response(302)
             self.send_header("Location", "/login?err=1")
             self.end_headers()
+
+    def _handle_logout(self):
+        body = b'{"status":"ok"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header(
+            "Set-Cookie",
+            "galgame_auth=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+        )
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_login(self):
         html = LOGIN_HTML.encode("utf-8")
@@ -461,6 +603,12 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
                 and safe_audio.suffix.lower() in AUDIO_EXTS
                 and safe_audio.is_file()
             ):
+                checker = GalgameWebHandler.audio_owner_check
+                if checker is not None and not checker(
+                    getattr(self, "current_user", ""), safe_audio.name
+                ):
+                    self.send_error(404)
+                    return
                 safe = safe_audio
         elif filename.startswith("bgm/"):
             safe_bgm = _safe_path(filename[len("bgm/") :], self.bgm_dir)
@@ -502,6 +650,10 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
         if not target:
             self._send_json_error(404, "API route not found")
             return
+        user = getattr(self, "current_user", "")
+        if not user:
+            self._send_json_error(401, "authentication required")
+            return
         path, query = target
         url = self.upstream + path + (f"?{query}" if query else "")
         body = None
@@ -529,6 +681,12 @@ class GalgameWebHandler(BaseHTTPRequestHandler):
                 return
         if token:
             req.add_header("Authorization", f"Bearer {token}")
+        timestamp, signature = sign_identity(
+            GalgameWebHandler.auth_secret, user
+        )
+        req.add_header(IDENTITY_USER_HEADER, user)
+        req.add_header(IDENTITY_TS_HEADER, timestamp)
+        req.add_header(IDENTITY_SIG_HEADER, signature)
 
         try:
             with urllib.request.urlopen(req, timeout=300) as resp:

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>公共对话池 - AI Galgame</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:24px;background:#141c2c;color:#e0e8f2;font:15px/1.6 system-ui,sans-serif}main{max-width:1000px;margin:auto}a{color:#a8cdf2}h1{font-size:24px}h2{font-size:18px}section,article{padding:18px;margin:16px 0;border:1px solid #34445b;border-radius:12px;background:#192538}input,select,textarea,button{font:inherit;color:inherit;background:#23344d;border:1px solid #4a607d;border-radius:7px;padding:8px}input,select,textarea{display:block;width:100%;margin:6px 0 14px}textarea{min-height:85px}button{cursor:pointer;margin:4px 8px 4px 0}button:disabled{opacity:.5;cursor:wait}small,.hint{color:#a9b9cf}.meta{font-size:13px;color:#a9b9cf}.description{white-space:pre-wrap;overflow-wrap:anywhere}.toolbar{display:flex;gap:16px;flex-wrap:wrap}#status{min-height:24px;color:#ffcc8c}dialog{width:min(850px,94vw);max-height:85vh;background:#192538;color:#e0e8f2;border:1px solid #4a607d;border-radius:12px}dialog::backdrop{background:#0009}.message{white-space:pre-wrap;overflow-wrap:anywhere;border-bottom:1px solid #34445b;padding:12px 0}.actions{display:flex;flex-wrap:wrap}
+</style>
+</head>
+<body><main>
+<nav class="toolbar"><a href="./index.html">返回对话</a><a href="./users.html">账号管理 / 退出登录</a></nav>
+<h1>公共对话池</h1>
+<p class="hint">分享自己的对话，经管理员审核后公开。领取会创建属于你的独立副本，可从现有剧情继续聊天。</p>
+<p id="status" role="status" aria-live="polite"></p>
+<section>
+<h2>提交我的对话</h2>
+<form id="submit-form">
+<label for="session">选择会话</label><select id="session" required></select>
+<label for="title">标题</label><input id="title" maxlength="100" required />
+<label for="description">简介</label><textarea id="description" maxlength="2000"></textarea>
+<p class="hint">将提交该会话的全部文字消息（含你的发言），不包含语音文件。审核通过后所有可登录用户均可阅读并复制。</p>
+<label><input id="consent" type="checkbox" required style="display:inline;width:auto" /> 我确认将此会话的文字记录提交公开审核</label>
+<button type="submit">提交审核</button>
+</form></section>
+<section><h2 id="list-title">公开内容与我的投稿</h2>
+<label for="view">筛选</label><select id="view"><option value="approved">已公开</option><option value="mine">我的投稿</option><option value="pending" id="pending-option" hidden>待审核（管理员）</option></select>
+<button id="refresh" type="button">刷新</button><div id="items"></div></section>
+<dialog id="preview"><h2 id="preview-title"></h2><div id="messages"></div><form method="dialog"><button>关闭</button></form></dialog>
+</main>
+<script>
+var API_BASE = "/api/plug/astrbot_plugin_galgame_web";
+var me = null;
+var items = [];
+var labels = {pending:"待审核", approved:"已公开", rejected:"已拒绝"};
+function setStatus(text) { document.getElementById("status").textContent = text || ""; }
+async function request(endpoint, body) {
+  var options = {credentials:"same-origin"};
+  if (body !== undefined) { options.method="POST"; options.headers={"Content-Type":"application/json"}; options.body=JSON.stringify(body); }
+  var response = await fetch(API_BASE + "/" + endpoint, options);
+  if (response.status === 401) { location.href="/login"; throw new Error("请重新登录"); }
+  var data = await response.json().catch(function(){return {};});
+  if (!response.ok) throw new Error(data.error || "请求失败：" + response.status);
+  return data;
+}
+async function apiGet(endpoint) { return request(endpoint); }
+async function apiPost(endpoint, body) { return request(endpoint, body); }
+function button(parent, text, action) {
+  var el=document.createElement("button"); el.type="button"; el.textContent=text;
+  el.addEventListener("click", async function(){el.disabled=true; try{await action();}catch(error){setStatus(error.message);}finally{el.disabled=false;}});
+  parent.appendChild(el);
+}
+async function preview(item) {
+  var data=await apiGet("pool/detail?id=" + encodeURIComponent(item.id));
+  document.getElementById("preview-title").textContent=data.item.title;
+  var messages=document.getElementById("messages"); messages.textContent="";
+  data.item.history.forEach(function(msg){var node=document.createElement("div");node.className="message";node.textContent=(msg.role === "user" ? "用户：" : "角色：") + msg.content;messages.appendChild(node);});
+  document.getElementById("preview").showModal();
+}
+function render() {
+  var container=document.getElementById("items"); container.textContent="";
+  var view=document.getElementById("view").value;
+  var visible=items.filter(function(item){return view === "mine" ? item.owner === me.username : view === "pending" ? me.is_admin && item.status === "pending" : item.status === "approved";});
+  if (!visible.length) { container.textContent="暂无内容"; return; }
+  visible.forEach(function(item){
+    var card=document.createElement("article");
+    var title=document.createElement("h2");title.textContent=item.title;card.appendChild(title);
+    var meta=document.createElement("p");meta.className="meta";meta.textContent=item.owner + " · " + item.message_count + " 条消息 · " + labels[item.status];card.appendChild(meta);
+    var desc=document.createElement("p");desc.className="description";desc.textContent=item.description;card.appendChild(desc);
+    if(item.reason){var reason=document.createElement("p");reason.textContent="审核意见："+item.reason;card.appendChild(reason);}
+    var actions=document.createElement("div");actions.className="actions";
+    button(actions,"阅读记录",function(){return preview(item);});
+    if(item.status === "approved") button(actions,"领取并继续对话",async function(){var data=await apiPost("pool/claim",{id:item.id});location.href="./index.html?sid="+encodeURIComponent(data.session_id);});
+    if(me.is_admin && item.status === "pending") {
+      button(actions,"审核通过",async function(){var reason=prompt("审核意见（可留空）","");if(reason===null)return;await apiPost("pool/review",{id:item.id,status:"approved",reason:reason});await load();setStatus("已通过审核");});
+      button(actions,"拒绝",async function(){var reason=prompt("拒绝原因","");if(reason===null)return;await apiPost("pool/review",{id:item.id,status:"rejected",reason:reason});await load();setStatus("已拒绝投稿");});
+    }
+    if(me.is_admin || item.owner === me.username) button(actions,"撤回 / 下架",async function(){if(!confirm("确认撤回这条公共池记录？已领取的个人副本不受影响。"))return;await apiPost("pool/delete",{id:item.id});await load();});
+    card.appendChild(actions);container.appendChild(card);
+  });
+}
+async function load() { var data=await apiGet("pool/list");items=data.items || [];render(); }
+document.getElementById("submit-form").addEventListener("submit",async function(event){
+  event.preventDefault();var submit=event.target.querySelector('button[type="submit"]');submit.disabled=true;
+  try{await apiPost("pool/submit",{session_id:document.getElementById("session").value,title:document.getElementById("title").value,description:document.getElementById("description").value});document.getElementById("consent").checked=false;document.getElementById("view").value="mine";await load();setStatus("提交成功，等待管理员审核");}catch(error){setStatus(error.message);}finally{submit.disabled=false;}
+});
+document.getElementById("view").addEventListener("change",render);
+document.getElementById("refresh").addEventListener("click",function(){load().catch(function(e){setStatus(e.message);});});
+async function init(){
+  me=await apiGet("me");document.getElementById("pending-option").hidden=!me.is_admin;
+  var data=await apiGet("session/list");var select=document.getElementById("session");
+  (data.sessions || []).filter(function(s){return s.message_count > 0;}).forEach(function(s){var option=document.createElement("option");option.value=s.session_id;option.textContent=s.last_message || s.session_id;select.appendChild(option);});
+  if(!select.options.length){var option=document.createElement("option");option.value="";option.textContent="没有可提交的对话，请先聊天";select.appendChild(option);}
+  await load();
+}
+init().catch(function(e){setStatus(e.message);});
+</script></body></html>

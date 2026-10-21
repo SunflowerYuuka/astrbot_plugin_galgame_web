@@ -1,3 +1,6 @@
+from .identity import resolve_owner
+
+
 class ConfigAPI:
     def _register_config_apis(self):
         pn = self._plugin_name
@@ -14,10 +17,13 @@ class ConfigAPI:
         from ..galgame_web.session_helpers import ASSETS_DIR, load_prefs
         from ..galgame_web.utils import get_emotion_tags
 
+        owner = resolve_owner(self)
+        if owner is None:
+            return {"error": "authentication required"}, 401
         files = list_asset_files(ASSETS_DIR)
         resolved = resolve_assets(self.config, files)
         emotion_keys = get_emotion_tags(self.config)
-        prefs = load_prefs()
+        prefs = load_prefs(owner)
         history_avatar = (
             self.config.get("history_avatar", "")
             or find_asset_for("history_avatar", files, "avatar")
@@ -53,4 +59,8 @@ class ConfigAPI:
             "web_host": self.config.get("web_host", "0.0.0.0"),
             "web_enabled": self.config.get("web_enabled", True),
             "font_style": prefs.get("font_style", "serif"),
+            "username": owner,
+            "is_admin": bool(
+                getattr(self, "_is_admin", lambda _name: False)(owner)
+            ),
         }

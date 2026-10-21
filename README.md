@@ -55,9 +55,45 @@ http://localhost:6186
 
 > **说明**：Dashboard 内嵌页运行在受限 sandbox 中；文字对话、会话管理、设置和收藏均可使用，麦克风录音及部分浏览器确认能力建议在独立 WebUI 中使用。
 
-> **安全说明**：`web_password` 是插件独立 WebUI 的密码，不是 AstrBot Dashboard 登录密码。密码为空时 WebUI 只监听 `127.0.0.1`；设置密码后才允许按 `web_host` 对局域网开放。公网访问必须置于 HTTPS 反向代理之后。独立 WebUI 是单用户/共享权限设计，知道同一密码的人可以访问全部 Galgame 会话；Dashboard 内嵌页仍依赖 Dashboard 自身登录。
+> **安全说明**：`web_password` 只用于首次启动时创建 `admin` 账号，不是 AstrBot Dashboard 登录密码，也不再是日常登录密码。账号体系启用后，WebUI 按账号隔离会话、收藏和界面偏好；密码为空且没有账号时只监听 `127.0.0.1`，创建账号后可按 `web_host` 对局域网开放。公网访问必须置于 HTTPS 反向代理之后。Dashboard 内嵌页仍依赖 Dashboard 自身登录，并以管理员身份访问。
+>
+> **Cloudflare Tunnel 注意**：ingress 指向 `http://localhost:6886` 时保持 cloudflared 默认 Host。若设置 `httpHostHeader: localhost:6886`，浏览器 `Origin: https://你的域名` 与插件看到的 `Host` 不一致，登录会被拒绝为 403。
 
 打开后在输入框输入文字即可对话，点击输入框左侧麦克风按钮可语音输入。
+
+### 多账号
+
+1. 首次启动且 `users.json` 不存在时，插件用 `web_password` 创建管理员 `admin`。
+2. 登录后进入「设置 → 账号管理」，添加普通账号或管理员、重置密码、删除账号。
+3. 每个账号拥有独立的会话列表、对话历史、语音收藏和界面偏好（BGM/音量/字体）；素材与 BGM 仍为全站共享。
+4. 忘记管理员密码：备份并删除 `data/plugin_data/astrbot_plugin_galgame_web/users.json`，重启 AstrBot，会重新用 `web_password` 创建 `admin`；原 `admin` 名下的会话/收藏/偏好仍会保留。
+5. `web_password` 修改后不会自动修改已有 `admin` 密码，请用账号管理页重置。
+
+### 外网链接、黑白名单与管理员
+
+在 AstrBot 插件配置中填写 `web_public_url`，例如 `https://galgame.example.com`。发送 `/galgame web` 即可取得此链接；不会修改 Cloudflare Tunnel 配置。
+
+| 用途 | 模式 | 黑名单 | 白名单 | 管理员名单 |
+|------|------|--------|--------|------------|
+| QQ、Telegram 等平台的 Galgame 指令 | `platform_access_mode` | `platform_blacklist` | `platform_whitelist` | `platform_admins` |
+| 独立网页账号 | `web_access_mode` | `web_blacklist` | `web_whitelist` | `web_admins` |
+
+- 模式 `blacklist`（默认）：除黑名单外允许；模式 `whitelist`：仅白名单及管理员允许。**黑名单始终优先，包括管理员**。
+- 平台名单填写字符串用户 ID（例如 QQ 号 `"123456"`），也可填写 `"aiocqhttp:123456"` 限定平台。网页名单填写已创建的账号名（例如 `alice`），不填写 QQ 号。
+- 网页账号管理中的管理员角色和 `web_admins` 均授予账号管理、公共池审核权限。名单不会自动创建账号。
+- 平台管理员可通过指令白名单；平台 ID 与网页账号是不同身份，平台管理员不会自动成为网页管理员。仅限制指令不能阻止别人转发链接，网页访问需另设账号名单。
+- 保存配置并重载插件后生效；已登录但被禁止的网页账号也会被拦截。
+
+### 公共对话池
+
+从独立 WebUI 主页面左上角进入「公共对话池」（`pool.html`）：
+
+1. **投稿**：选择自己的非空会话，填写标题和简介，确认将全部文字消息提交审核。投稿保存为独立快照；不包含音频、系统消息或内部标识。
+2. **审核**：管理员选择「待审核」，阅读记录后通过或拒绝，可填写意见。待审核和已拒绝内容仅投稿人和管理员可见，作者可在「我的投稿」查看。
+3. **领取**：已公开记录可以阅读，点击「领取并继续对话」会创建属于当前账号的新会话和 AstrBot 对话上下文。模型继续使用本实例配置的人格和模型；不会复制投稿人的私人配置。
+4. **撤回 / 下架**：作者和管理员可移除条目，已经领取的个人副本保留。私有会话、公共快照和领取副本互不影响。
+
+公共池保存在 `data/plugin_data/astrbot_plugin_galgame_web/public_pool.json`。每条最多 400 条文字消息、100000 字符，每账号最多 10 条待审核记录，公共池最多 1000 条记录。提交时会包含你的文字发言，界面会要求确认。
 
 ---
 
@@ -73,9 +109,9 @@ http://localhost:6186
 | `tts_enabled` | 启用 TTS 语音朗读 | 默认 `true`，`false` = 静音对话 |
 | `audio_format` | TTS 音频格式 | `wav`=无损(≈2MB/条)；`mp3`=需 ffmpeg(≈200KB/条)，未安装自动回退 wav |
 | `web_port` | 独立 WebUI 端口 | 默认 `6186`，`0` = 关闭 |
-| `web_host` | 独立 WebUI 监听地址 | 默认 `0.0.0.0`；无密码时自动回退 `127.0.0.1` |
+| `web_host` | 独立 WebUI 监听地址 | 默认 `0.0.0.0`；无账号且无密码时自动回退 `127.0.0.1` |
 | `web_enabled` | 启用独立 WebUI | 默认 `true`，`false` = 仅 Dashboard 内嵌页 |
-| `web_password` | 独立 WebUI 专用密码 | 局域网访问必须设置；与 Dashboard 密码无关 |
+| `web_password` | 首次启动的管理员密码 | 首次启动时创建 `admin`；之后在「设置 → 账号管理」维护账号 |
 | `sprite_mode` | 立绘渲染模式 | **`single`**（推荐，VRM 尚不可用） |
 | `vrm_model` | VRM 3D 模型文件（`assets/` 下的 `.vrm`，仅 VRM 模式） | 留空自动匹配 |
 | `sprite_scale` | 立绘整体缩放倍数 | 默认 `1.0`，建议 0.5 ~ 2.0 |
@@ -256,7 +292,7 @@ Galgame 主页面右上角点击齿轮 ⚙ 图标进入。
 
 ## 会话持久化
 
-对话历史保存到 `data/plugin_data/astrbot_plugin_galgame_web/sessions/`。浏览器 `localStorage` 记录当前 `session_id`；记录缺失时，服务端会自动恢复最近一次非空会话。新建对话前会先复用已有空白会话，没有空白会话时才创建。
+对话历史保存到 `data/plugin_data/astrbot_plugin_galgame_web/sessions/`，每个会话带 `owner` 字段。浏览器 `localStorage` 记录当前 `session_id`；记录缺失时，服务端只会恢复**当前账号**最近一次非空会话，不会进入其他账号的会话。新建对话前会先复用当前账号的空白会话，没有空白会话时才创建。账号名和密码哈希保存在 `users.json`，各账号偏好保存在 `prefs_users.json`，收藏条目带 `owner` 字段。
 
 历史达到配置上限时会滚动裁剪。语音文件只要仍被任一保留历史或收藏引用就不会删除；从所有历史中消失且未收藏时，才会被物理回收。
 
@@ -271,9 +307,10 @@ TTS provider 生成的新临时文件会在音频复制到插件数据目录后�
 | 关闭浏览器再打开 | 否 | localStorage 记录 session_id |
 | 超过保留天数未活跃 | **是** | GC 自动清理（默认 7 天） |
 | 手动删除 `sessions/` | **是** | 物理删除 |
-| 更换浏览器 | 否 | 无 localStorage 时自动恢复服务端最近会话 |
-| 无痕/隐私模式 | 否 | 当前标签关闭后仍可按服务端最近会话恢复 |
-| 换电脑/设备 | 否* | 能访问同一独立 WebUI 时可恢复；插件不提供跨 AstrBot 实例同步 |
+| 更换浏览器 | 否* | 登录同一账号后自动恢复该账号最近会话；不同账号互相不可见 |
+| 无痕/隐私模式 | 否* | 登录同一账号后按该账号最近会话恢复 |
+| 换电脑/设备 | 否* | 登录同一账号后可恢复；插件不提供跨 AstrBot 实例同步 |
+| 删除账号 | **是** | 会话、收藏、偏好一并删除 |
 
 > 将会话保留天数设为 `0` 则永不清理。同时注意 AstrBot Dashboard 对话管理中也可查看/导出 Galgame 对话记录。
 

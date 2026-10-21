@@ -80,7 +80,7 @@ class BGMAPI:
 
     async def _api_bgm_delete(self):
         from ..galgame_web.assets_helpers import safe_path
-        from ..galgame_web.session_helpers import BGM_DIR, load_prefs, save_prefs
+        from ..galgame_web.session_helpers import BGM_DIR, clear_bgm_file_pref
 
         data = await request.get_json() or {}
         if not isinstance(data, dict):
@@ -97,10 +97,7 @@ class BGMAPI:
             logger.info(f"Deleted BGM: {sp.name}")
         except OSError as e:
             return {"error": str(e)}, 500
-        prefs = load_prefs()
-        if prefs.get("bgm_file") == filename:
-            prefs["bgm_file"] = ""
-            save_prefs(prefs)
+        clear_bgm_file_pref(filename)
         return {"deleted": sp.name}
 
     async def _api_bgm_file(self):

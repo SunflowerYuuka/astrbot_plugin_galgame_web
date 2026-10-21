@@ -1,6 +1,23 @@
 # AGENTS.md
 
-AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.8.5）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.10.0）。双端（Dashboard 内嵌页 + 独立 WebUI）共享大部分前端代码但结构不同，改动时极易踩坑。以下均为已验证事实。
+
+## 访问控制与公共池（v0.10.0）
+
+- `galgame_web/access.py` 统一黑白名单及配置管理员判定；平台指令和网页账号分别配置，不自动绑定身份。
+- `/galgame web` 读取 `web_public_url`；`platform_*` 名单按用户 ID（或平台名:ID）检查。
+- `web_*` 名单在登录、Cookie 验证及签名 API 身份解析中检查；`web_admins` 和账号管理员角色等效，黑名单始终优先。
+- `galgame_web/public_pool.py` 保存经过审核的文字快照；`api/pool.py` 提供 list/detail/submit/review/claim/delete。领取必须创建独立 AstrBot 对话并注入快照历史，失败时回滚。
+- `galgame_web/galgame/pool.html` 是独立 WebUI 入口；只分享 user/assistant 的 content，不复制私有音频和内部元数据。
+
+## 多账号（v0.9.0）
+
+- 账号存储：`galgame_web/users.py`（PBKDF2-SHA256，`users.json`），首次启动用 `web_password` 创建 `admin`。
+- 登录：`galgame_web/web_handler.py` 签发带用户名的 HMAC Cookie；独立 WebUI 代理到 Dashboard API 时附加签名身份头（`X-Galgame-User` / `-Ts` / `-Sig`），由 `api/identity.py` 校验。
+- 数据归属：session `owner`、favorite `owner`、`prefs_users.json`；`api/session.py`、`favorites.py`、`prefs.py`、`config.py`、`audio.py` 都按当前用户过滤。
+- 管理 API：`api/users.py`（`me` / `users/list` / `users/add` / `users/delete` / `users/password`），管理页 `galgame_web/galgame/users.html`。
+- 新增测试：`test_users.py`、`test_identity.py`、`test_multi_user.py`、`test_web_accounts.py`、`test_plugin_bootstrap.py`、`test_pipeline_payload.py`。
+- 升级兼容：旧会话/收藏/偏好归入 `admin`；旧版单密码仍可作为首次启动的 `admin` 密码。
 
 ## 测试 / Lint
 
@@ -46,7 +63,7 @@ AstrBot 插件：galgame 风格 AI 虚拟伙伴 WebUI（当前 v0.8.5）。双�
 - 视觉验证：`agent-browser` 截图 + `vision-analyzer` 子代理审查（主模型不支持图像输入）
 - 游戏素材解包：`D:\galtool\garbro_mod\GARbro.Console.exe`（xp3 归档；`-x <arc> <entry>` 精确条目解包，输出到当前工作目录；ENTRIES 不支持通配符）。ATRI 游戏在 `D:\SteamLibrary\steamapps\common\ATRI -My Dear Moments-`；已解包素材在 `D:\Code\games\atri_ui\`、演示页在 `D:\Code\opendemo\`
 - OpenPencil（`op` CLI）：PowerShell 下 `op.ps1` 会剥双引号——**JSON 参数必须写文件用 `@file` 传入**；应用 UI 自动化不可靠，设计验证靠 `.op` 文件 + HTML demo 渲染
-- 数据目录：`data/plugin_data/astrbot_plugin_galgame_web/`（assets/audio/bgm/sessions/characters.json/prefs.json/favorites.json）
+- 数据目录：`data/plugin_data/astrbot_plugin_galgame_web/`（assets/audio/bgm/sessions/characters.json/prefs.json/prefs_users.json/favorites.json/users.json）
 
 ## 代码风格
 

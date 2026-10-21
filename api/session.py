@@ -10,6 +10,7 @@ from quart import request
 from astrbot.api import logger
 
 from ..galgame_web import audio_utils, pipeline, tts
+from .identity import resolve_owner
 
 MAX_TEXT_CHARS = 20_000
 MAX_SESSIONS = 200
@@ -64,8 +65,19 @@ class SessionAPI:
 
     # ---- session init ----
 
-    @staticmethod
-    def _find_latest_session() -> str | None:
+    def _owner(self) -> str | None:
+        return resolve_owner(self)
+
+    def _owned_session(self, sid: str):
+        owner = self._owner()
+        if owner is None:
+            return None, ({"error": "authentication required"}, 401)
+        session = self._sessions.get(sid)
+        if not session or (session.get("owner") or "admin") != owner:
+            return None, ({"error": "session not found"}, 404)
+        return session, None
+
+    def _find_latest_session(self, owner: str) -> str | None:
         from ..galgame_web.session_helpers import SESSIONS_DIR, is_valid_session_id
 
         best_sid = None
@@ -74,15 +86,21 @@ class SessionAPI:
             if not is_valid_session_id(path.stem):
                 continue
             try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                if (data.get("owner") or "admin") != owner:
+                    continue
                 mtime = path.stat().st_mtime
                 if mtime > best_mtime:
                     best_mtime = mtime
                     best_sid = path.stem
-            except OSError:
+            except (OSError, json.JSONDecodeError):
                 pass
         return best_sid
 
-    def _find_blank_session(self) -> str | None:
+    def _find_blank_session(self, owner: str) -> str | None:
         from ..galgame_web.session_helpers import SESSIONS_DIR, is_valid_session_id
 
         best_sid = None
@@ -94,6 +112,8 @@ class SessionAPI:
             try:
                 in_memory = self._sessions.get(sid)
                 if in_memory is not None:
+                    if (in_memory.get("owner") or "admin") != owner:
+                        continue
                     send_lock = in_memory.get("_send_lock")
                     if (
                         in_memory.get("history")
@@ -105,7 +125,11 @@ class SessionAPI:
                 else:
                     with open(path, encoding="utf-8") as f:
                         data = json.load(f)
-                    is_blank = isinstance(data, dict) and not data.get("history")
+                    if not isinstance(data, dict):
+                        continue
+                    if (data.get("owner") or "admin") != owner:
+                        continue
+                    is_blank = not data.get("history")
                 if is_blank:
                     mtime = path.stat().st_mtime
                     if mtime > best_mtime:
@@ -142,24 +166,31 @@ class SessionAPI:
             if resume_id and not is_valid_session_id(resume_id):
                 return {"error": "invalid resume_id"}, 400
             force_new = data.get("force_new", False) is True
+            owner = self._owner()
+            if owner is None:
+                return {"error": "authentication required"}, 401
 
             in_mem = resume_id in self._sessions if resume_id else False
             on_disk = session_path(resume_id).exists() if resume_id else False
             logger.info(
-                f"[session] init resume_id={resume_id} in_memory={in_mem} on_disk={on_disk} total_loaded={len(self._sessions)}"
+                f"[session] init user={owner} resume_id={resume_id} "
+                f"in_memory={in_mem} on_disk={on_disk} "
+                f"total_loaded={len(self._sessions)}"
             )
 
             if resume_id and resume_id in self._sessions:
-                return {
-                    "session_id": resume_id,
-                    "current_emotion": self._sessions[resume_id].get(
-                        "current_emotion", "neutral"
-                    ),
-                }
+                if (self._sessions[resume_id].get("owner") or "admin") == owner:
+                    return {
+                        "session_id": resume_id,
+                        "current_emotion": self._sessions[resume_id].get(
+                            "current_emotion", "neutral"
+                        ),
+                    }
+                resume_id = ""
 
             if resume_id:
                 s = load_session(resume_id)
-                if s:
+                if s and (s.get("owner") or "admin") == owner:
                     self._sessions[resume_id] = s
                     return {
                         "session_id": resume_id,
@@ -167,7 +198,7 @@ class SessionAPI:
                     }
 
             if not force_new:
-                latest = self._find_latest_session()
+                latest = self._find_latest_session(owner)
                 if latest:
                     s = self._sessions.get(latest)
                     if s is None:
@@ -187,7 +218,7 @@ class SessionAPI:
 
             # A forced new conversation may reuse an existing empty session. This
             # avoids accumulating blank, undeletable sessions on repeated clicks.
-            blank_sid = self._find_blank_session()
+            blank_sid = self._find_blank_session(owner)
             if blank_sid:
                 s = self._sessions.get(blank_sid)
                 if s is None:
@@ -205,11 +236,19 @@ class SessionAPI:
                         "current_emotion": s.get("current_emotion", "neutral"),
                     }
 
-            session_count = sum(
-                1
-                for path in SESSIONS_DIR.glob("*.json")
-                if is_valid_session_id(path.stem)
-            )
+            session_count = 0
+            for path in SESSIONS_DIR.glob("*.json"):
+                if not is_valid_session_id(path.stem):
+                    continue
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        stored = json.load(f)
+                    if isinstance(stored, dict) and (
+                        stored.get("owner") or "admin"
+                    ) == owner:
+                        session_count += 1
+                except (OSError, json.JSONDecodeError):
+                    pass
             if session_count >= MAX_SESSIONS:
                 return {"error": "session limit reached"}, 429
 
@@ -217,6 +256,7 @@ class SessionAPI:
             session = {
                 "umo": "",
                 "conv_id": "",
+                "owner": owner,
                 "history": [],
                 "current_emotion": "neutral",
                 "pending_rapid_clicks": 0,
@@ -245,13 +285,19 @@ class SessionAPI:
         from ..galgame_web.session_helpers import is_valid_session_id
 
         sid = request.args.get("session_id", "")
-        if not is_valid_session_id(sid) or sid not in self._sessions:
+        if not is_valid_session_id(sid):
             return {"error": "invalid session_id"}, 400
-        return {"messages": self._sessions[sid]["history"]}
+        session, error = self._owned_session(sid)
+        if error:
+            return error
+        return {"messages": session["history"]}
 
     async def _api_session_list(self):
         from ..galgame_web.session_helpers import SESSIONS_DIR, is_valid_session_id
 
+        owner = self._owner()
+        if owner is None:
+            return {"error": "authentication required"}, 401
         sessions_list = []
         for path in SESSIONS_DIR.glob("*.json"):
             try:
@@ -261,6 +307,8 @@ class SessionAPI:
                 continue
             sid = path.stem
             if not is_valid_session_id(sid) or not isinstance(data, dict):
+                continue
+            if (data.get("owner") or "admin") != owner:
                 continue
             history = data.get("history", [])
             if not isinstance(history, list):
@@ -303,20 +351,26 @@ class SessionAPI:
         sid = raw_sid.strip() if isinstance(raw_sid, str) else ""
         if not is_valid_session_id(sid):
             return {"error": "invalid session_id"}, 400
+        owner = self._owner()
+        if owner is None:
+            return {"error": "authentication required"}, 401
         path = session_path(sid)
         if sid not in self._sessions and not path.exists():
             return {"error": "session not found"}, 404
         removed_history = []
         if sid in self._sessions:
             session = self._sessions[sid]
+            if (session.get("owner") or "admin") != owner:
+                return {"error": "session not found"}, 404
             send_lock = session.setdefault("_send_lock", asyncio.Lock())
             async with send_lock:
                 removed_history = list(session.get("history", []))
                 del self._sessions[sid]
         elif path.exists():
             stored = load_session(sid)
-            if stored:
-                removed_history = list(stored.get("history", []))
+            if not stored or (stored.get("owner") or "admin") != owner:
+                return {"error": "session not found"}, 404
+            removed_history = list(stored.get("history", []))
         if path.exists():
             path.unlink()
         cleanup_unreferenced_audio(removed_history, self._sessions)
@@ -331,8 +385,11 @@ class SessionAPI:
             return {"error": "no data"}, 400
         sid = data.get("session_id", "")
         count = data.get("count", 0)
-        if not is_valid_session_id(sid) or sid not in self._sessions:
+        if not is_valid_session_id(sid):
             return {"error": "invalid session_id"}, 400
+        session, error = self._owned_session(sid)
+        if error:
+            return error
         if not isinstance(count, int) or isinstance(count, bool):
             return {"error": "invalid count"}, 400
         if not self.config.get("rapid_click_enabled", True):
@@ -343,12 +400,11 @@ class SessionAPI:
         count = max(0, min(count, 1000))
         if count < max(1, threshold):
             return {"error": "rapid click threshold not reached"}, 400
-        if sid in self._sessions:
-            async with self._sessions[sid]["_lock"]:
-                self._sessions[sid]["pending_rapid_clicks"] = max(
-                    count,
-                    self._sessions[sid].get("pending_rapid_clicks", 0),
-                )
+        async with session["_lock"]:
+            session["pending_rapid_clicks"] = max(
+                count,
+                session.get("pending_rapid_clicks", 0),
+            )
         return {"status": "ok"}
 
     # ---- message editing helpers ----
@@ -403,8 +459,11 @@ class SessionAPI:
         sid = data.get("session_id", "")
         raw_text = data.get("text", "")
         audio_data = data.get("audio_data", "")
-        if not is_valid_session_id(sid) or sid not in self._sessions:
+        if not is_valid_session_id(sid):
             return {"error": "invalid session_id"}, 400
+        session, error = self._owned_session(sid)
+        if error:
+            return error
         if not isinstance(raw_text, str):
             return {"error": "text must be a string"}, 400
         if not isinstance(audio_data, str):
@@ -425,7 +484,6 @@ class SessionAPI:
         if current_task:
             active_tasks.add(current_task)
         try:
-            session = self._sessions[sid]
             send_lock = session.setdefault("_send_lock", asyncio.Lock())
             async with send_lock:
                 if getattr(self, "_terminating", False):
@@ -537,9 +595,12 @@ class SessionAPI:
         )
 
     def _send_parse_input(self, sid):
-        if not sid or sid not in self._sessions:
-            return {"error": "invalid session_id"}
-        session = self._sessions[sid]
+        owner = self._owner()
+        if owner is None:
+            return {"error": "authentication required"}
+        session = self._sessions.get(sid) if sid else None
+        if not session or (session.get("owner") or "admin") != owner:
+            return {"error": "session not found"}
         return session
 
     def _send_parse_command(self, text):

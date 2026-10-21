@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>账号管理 - AI Galgame 虚拟伙伴</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: #141c2c;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 24px;
+}
+h1 { font-size: 22px; margin-bottom: 4px; }
+.sub { color: #888; margin-bottom: 20px; font-size: 13px; }
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #aaa;
+  text-decoration: none;
+  font-size: 13px;
+  margin-bottom: 16px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid #333;
+  transition: color .2s, background .2s;
+}
+.back-btn:hover { color: #cfe2f5; background: rgba(91, 140, 196, 0.15); }
+.section {
+  margin-bottom: 20px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid #333;
+  background: rgba(20, 30, 48, 0.85);
+}
+.section h2 { font-size: 16px; margin-bottom: 12px; }
+.row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+label { font-size: 13px; color: #aaa; }
+input[type="text"], input[type="password"] {
+  padding: 9px 12px;
+  font-size: 14px;
+  color: #dbe7f5;
+  background: rgba(255,255,255,.06);
+  border: 1px solid #33415a;
+  border-radius: 8px;
+  outline: none;
+  min-width: 180px;
+}
+input:focus { border-color: #5b8cc4; }
+button {
+  padding: 9px 14px;
+  font-size: 14px;
+  color: #eaf2fb;
+  background: rgba(91,140,196,.35);
+  border: 1px solid rgba(140,170,210,.25);
+  border-radius: 8px;
+  cursor: pointer;
+}
+button:hover { background: rgba(120,165,215,.45); }
+button.danger { background: rgba(190,70,70,.3); border-color: rgba(230,120,120,.3); }
+button.danger:hover { background: rgba(220,80,80,.45); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #2a3548; }
+th { color: #8fa7c4; font-weight: 600; font-size: 12px; }
+td.actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #2a3b55; color: #9cc4ea; }
+.badge.admin { background: #3b3220; color: #e6c07b; }
+.status { min-height: 20px; font-size: 13px; color: #9cc4ea; margin-top: 10px; }
+.status.error { color: #ff8a8a; }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<h1>账号管理</h1>
+<p><a href="./pool.html">公共对话池 / 审核投稿</a></p>
+<div class="sub">每个账号拥有独立的会话、收藏和界面偏好。</div>
+<a class="back-btn" href="./index.html">返回 Galgame</a>
+
+<div class="section">
+  <div class="row">
+    <span>当前账号：<b id="me-name">-</b></span>
+    <span id="me-role" class="badge hidden"></span>
+    <button id="logout-btn" type="button">退出登录</button>
+  </div>
+</div>
+
+<div id="admin-box" class="hidden">
+  <div class="section">
+    <h2>添加账号</h2>
+    <form id="add-form" class="row" autocomplete="off">
+      <input id="add-username" type="text" placeholder="账号（小写字母开头）" maxlength="32" required />
+      <input id="add-password" type="password" placeholder="密码（至少 8 位）" maxlength="256" required />
+      <label><input id="add-admin" type="checkbox" /> 管理员</label>
+      <button type="submit">添加</button>
+    </form>
+    <div id="add-status" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>账号列表</h2>
+    <table>
+      <thead><tr><th>账号</th><th>角色</th><th>创建时间</th><th>操作</th></tr></thead>
+      <tbody id="user-list"></tbody>
+    </table>
+    <div id="list-status" class="status"></div>
+  </div>
+</div>
+
+<div id="viewer-box" class="section hidden">
+  <div>当前账号不是管理员，无法管理其他账号。</div>
+</div>
+
+<script>
+var PLUGIN = "astrbot_plugin_galgame_web";
+var API_BASE = "/api/plug/" + PLUGIN;
+var currentUser = "";
+
+function setStatus(id, text, isError) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text || "";
+  el.className = "status" + (isError ? " error" : "");
+}
+
+async function apiGet(endpoint) {
+  var resp = await fetch(API_BASE + "/" + endpoint, { credentials: "same-origin" });
+  if (resp.status === 401) {
+    location.href = "/login";
+    throw new Error("authentication required");
+  }
+  var data = await resp.json().catch(function() { return {}; });
+  if (!resp.ok) throw new Error(data.error || (endpoint + " returned " + resp.status));
+  return data;
+}
+
+async function apiPost(endpoint, body) {
+  var resp = await fetch(API_BASE + "/" + endpoint, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (resp.status === 401) {
+    location.href = "/login";
+    throw new Error("authentication required");
+  }
+  var data = await resp.json().catch(function() { return {}; });
+  if (!resp.ok) throw new Error(data.error || (endpoint + " returned " + resp.status));
+  return data;
+}
+
+function formatTime(ts) {
+  if (!ts) return "-";
+  var d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return "-";
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" +
+    String(d.getDate()).padStart(2, "0") + " " +
+    String(d.getHours()).padStart(2, "0") + ":" +
+    String(d.getMinutes()).padStart(2, "0");
+}
+
+function renderUsers(users) {
+  var tbody = document.getElementById("user-list");
+  tbody.innerHTML = "";
+  if (!users.length) {
+    var empty = document.createElement("tr");
+    var cell = document.createElement("td");
+    cell.colSpan = 4;
+    cell.textContent = "暂无账号";
+    empty.appendChild(cell);
+    tbody.appendChild(empty);
+    return;
+  }
+  users.forEach(function(user) {
+    var row = document.createElement("tr");
+
+    var nameCell = document.createElement("td");
+    nameCell.textContent = user.username;
+    row.appendChild(nameCell);
+
+    var roleCell = document.createElement("td");
+    var role = document.createElement("span");
+    role.className = "badge" + (user.is_admin ? " admin" : "");
+    role.textContent = user.is_admin ? "管理员" : "用户";
+    roleCell.appendChild(role);
+    row.appendChild(roleCell);
+
+    var timeCell = document.createElement("td");
+    timeCell.textContent = formatTime(user.created_at);
+    row.appendChild(timeCell);
+
+    var actions = document.createElement("td");
+    actions.className = "actions";
+
+    var resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.textContent = "重置密码";
+    resetBtn.addEventListener("click", function() { resetPassword(user.username); });
+    actions.appendChild(resetBtn);
+
+    var delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "danger";
+    delBtn.textContent = "删除";
+    delBtn.addEventListener("click", function() { deleteUser(user.username); });
+    actions.appendChild(delBtn);
+
+    row.appendChild(actions);
+    tbody.appendChild(row);
+  });
+}
+
+async function loadUsers() {
+  try {
+    var data = await apiGet("users/list");
+    renderUsers(data.users || []);
+    setStatus("list-status", "");
+  } catch (err) {
+    setStatus("list-status", err.message || String(err), true);
+  }
+}
+
+async function resetPassword(username) {
+  var password = prompt("为 " + username + " 设置新密码（至少 8 位）：");
+  if (password === null) return;
+  if (password.length < 8) {
+    alert("密码至少 8 位");
+    return;
+  }
+  try {
+    await apiPost("users/password", { username: username, password: password });
+    setStatus("list-status", "已重置 " + username + " 的密码");
+  } catch (err) {
+    setStatus("list-status", err.message || String(err), true);
+  }
+}
+
+async function deleteUser(username) {
+  if (!confirm("删除账号 " + username + " 及其全部会话、收藏和偏好？此操作不可恢复。")) return;
+  try {
+    await apiPost("users/delete", { username: username });
+    if (username === currentUser) {
+      location.href = "/login";
+      return;
+    }
+    await loadUsers();
+    setStatus("list-status", "已删除 " + username);
+  } catch (err) {
+    setStatus("list-status", err.message || String(err), true);
+  }
+}
+
+async function logout() {
+  try {
+    await fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+  } catch (err) {
+    console.warn("logout failed:", err);
+  }
+  location.href = "/login";
+}
+
+async function init() {
+  try {
+    var me = await apiGet("me");
+    currentUser = me.username || "";
+    document.getElementById("me-name").textContent = currentUser || "-";
+    var roleEl = document.getElementById("me-role");
+    roleEl.textContent = me.is_admin ? "管理员" : "用户";
+    roleEl.className = "badge" + (me.is_admin ? " admin" : "");
+    roleEl.classList.remove("hidden");
+    if (me.is_admin) {
+      document.getElementById("admin-box").classList.remove("hidden");
+      await loadUsers();
+    } else {
+      document.getElementById("viewer-box").classList.remove("hidden");
+    }
+  } catch (err) {
+    console.warn("init failed:", err);
+  }
+}
+
+document.getElementById("logout-btn").addEventListener("click", logout);
+document.getElementById("add-form").addEventListener("submit", async function(e) {
+  e.preventDefault();
+  var username = document.getElementById("add-username").value.trim();
+  var password = document.getElementById("add-password").value;
+  var isAdmin = document.getElementById("add-admin").checked;
+  setStatus("add-status", "");
+  try {
+    await apiPost("users/add", {
+      username: username,
+      password: password,
+      is_admin: isAdmin,
+    });
+    document.getElementById("add-username").value = "";
+    document.getElementById("add-password").value = "";
+    document.getElementById("add-admin").checked = false;
+    await loadUsers();
+    setStatus("add-status", "已添加 " + username);
+  } catch (err) {
+    setStatus("add-status", err.message || String(err), true);
+  }
+});
+
+init();
+</script>
+</body>
+</html>

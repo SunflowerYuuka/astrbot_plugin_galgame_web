@@ -67,11 +67,13 @@ def test_external_webui_proxy_allowlist_covers_frontend_calls():
         "galgame_web/galgame/app.js",
         "galgame_web/galgame/settings.html",
         "galgame_web/galgame/favorites.html",
+        "galgame_web/galgame/users.html",
+        "galgame_web/galgame/pool.html",
     ):
         sources.append((ROOT / relative).read_text(encoding="utf-8"))
     combined = "\n".join(sources)
 
-    get_endpoints = set(re.findall(r'apiGet\("([^"]+)"', combined))
+    get_endpoints = {name.split("?", 1)[0] for name in re.findall(r'apiGet\("([^"]+)"', combined)}
     post_endpoints = set(re.findall(r'apiPost\("([^"]+)"', combined))
     post_endpoints.update(re.findall(r'_proxyApiPost\("([^"]+)"', combined))
 

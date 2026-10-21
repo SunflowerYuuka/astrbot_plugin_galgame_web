@@ -4,6 +4,7 @@ import os
 import re
 import secrets
 import threading
+from urllib.parse import urlsplit
 
 import jwt
 
@@ -16,9 +17,14 @@ from .api.audio import AudioAPI
 from .api.bgm import BGMAPI
 from .api.config import ConfigAPI
 from .api.favorites import FavoritesAPI
+from .api.identity import IdentityAPI
+from .api.pool import PoolAPI
 from .api.prefs import PrefsAPI
 from .api.session import SessionAPI
+from .api.users import UserAPI
 from .galgame_web import tts
+from .galgame_web.access import can_use, members
+from .galgame_web.public_pool import PoolStore
 from .galgame_web.session_helpers import (
     ASSETS_DIR,
     AUDIO_DIR,
@@ -38,6 +44,7 @@ from .galgame_web.utils import (
     extract_all_emotions,
     get_emotion_tags,
 )
+from .galgame_web.users import UserStore
 from .galgame_web.web_handler import (
     BoundedThreadingHTTPServer,
     GalgameWebHandler,
@@ -46,7 +53,17 @@ from .galgame_web.web_handler import (
 
 
 class GalgamePlugin(
-    AssetAPI, AudioAPI, BGMAPI, ConfigAPI, FavoritesAPI, PrefsAPI, SessionAPI, Star
+    AssetAPI,
+    AudioAPI,
+    BGMAPI,
+    ConfigAPI,
+    FavoritesAPI,
+    PrefsAPI,
+    SessionAPI,
+    UserAPI,
+    PoolAPI,
+    IdentityAPI,
+    Star,
 ):
     _plugin_name = PLUGIN_NAME
 
@@ -65,6 +82,31 @@ class GalgamePlugin(
         dashboard_cfg = cfg.get("dashboard", {}) if cfg else {}
         self._webchat_username = dashboard_cfg.get("username", "astrbot")
 
+        configured_password = self.config.get("web_password", "")
+        web_password = (
+            configured_password if isinstance(configured_password, str) else ""
+        )
+        self._identity_secret = secrets.token_bytes(32)
+        self._user_store = UserStore()
+        self._pool_store = PoolStore()
+        bootstrap_user = None
+        try:
+            bootstrap_user = self._user_store.ensure_bootstrap(web_password)
+        except Exception as e:
+            logger.warning(f"Failed to bootstrap the admin account: {e}")
+        if bootstrap_user:
+            logger.info(
+                "Galgame WebUI created the initial admin account from web_password"
+            )
+        has_users = self._user_store.has_users()
+        GalgameWebHandler.user_store = self._user_store
+        GalgameWebHandler.auth_secret = self._identity_secret
+        GalgameWebHandler.auth_configured = has_users or bool(web_password)
+        GalgameWebHandler.web_password = web_password
+        GalgameWebHandler.access_config = self.config
+        GalgameWebHandler.audio_owner_check = self._audio_owned_by_user
+        legacy_owner = self._user_store.default_owner()
+
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         ASSETS_DIR.mkdir(parents=True, exist_ok=True)
         gc_sessions(
@@ -74,7 +116,7 @@ class GalgamePlugin(
                 delete_astrbot_conv(self.context, self._webchat_username, sid)
             ),
         )
-        load_all_sessions(self._sessions)
+        load_all_sessions(self._sessions, legacy_owner=legacy_owner)
         self._track_task(
             sync_sessions_to_db(
                 self.context,
@@ -92,20 +134,19 @@ class GalgamePlugin(
         web_port = int(self.config.get("web_port", 0) or 0)
         web_enabled = self.config.get("web_enabled", True)
         if web_enabled and web_port > 0:
-            configured_password = self.config.get("web_password", "")
-            web_password = (
-                configured_password if isinstance(configured_password, str) else ""
-            )
             configured_host = self.config.get("web_host", "0.0.0.0")
-            web_host = resolve_web_bind_host(configured_host, web_password)
+            web_host = resolve_web_bind_host(
+                configured_host,
+                web_password,
+                auth_configured=GalgameWebHandler.auth_configured,
+            )
             if web_host != str(configured_host or "0.0.0.0").strip():
                 logger.warning(
-                    "Galgame WebUI has no password; binding to 127.0.0.1 only. "
-                    "Set web_password to allow LAN access."
+                    "Galgame WebUI has no password or accounts; binding to "
+                    "127.0.0.1 only. Set web_password to bootstrap the admin "
+                    "account and allow LAN access."
                 )
                 web_host = "127.0.0.1"
-            GalgameWebHandler.web_password = web_password
-            GalgameWebHandler.auth_secret = secrets.token_bytes(32)
             self._setup_proxy_auth()
             self._start_web_server(web_host, web_port)
 
@@ -117,6 +158,8 @@ class GalgamePlugin(
         self._register_favorites_apis()
         self._register_prefs_apis()
         self._register_session_apis()
+        self._register_user_apis()
+        self._register_pool_apis()
 
     def _track_task(self, awaitable):
         task = asyncio.ensure_future(awaitable)
@@ -138,6 +181,11 @@ class GalgamePlugin(
 
         task.add_done_callback(_done)
         return task
+
+    def _audio_owned_by_user(self, username: str, filename: str) -> bool:
+        from .api.identity import session_audio_owned
+
+        return session_audio_owned(self, username, filename)
 
     def _get_history_limit(self) -> int:
         max_turns = (
@@ -281,7 +329,34 @@ class GalgamePlugin(
     # ---- command ----
 
     @filter.command("galgame")
-    async def cmd_galgame(self, event: AstrMessageEvent) -> MessageEventResult:
+    async def cmd_galgame(self, event: AstrMessageEvent, action: str = "") -> MessageEventResult:
+        sender = str(event.get_sender_id())
+        platform = event.get_platform_name()
+        admins = members(self.config, "platform_admins")
+        admin = bool({sender, f"{platform}:{sender}"} & admins)
+        if not can_use(self.config, "platform", sender, admin=admin, platform=platform):
+            yield event.plain_result("你无权使用 Galgame。")
+            return
+        if action and action.lower() != "web":
+            yield event.plain_result("使用 /galgame web 获取网页入口。")
+            return
+        public_url = str(self.config.get("web_public_url", "") or "").strip()
+        if action.lower() == "web":
+            try:
+                parsed = urlsplit(public_url)
+                valid = (
+                    parsed.scheme in ("http", "https") and parsed.hostname
+                    and not parsed.username and not parsed.password
+                    and not any(char.isspace() for char in public_url)
+                )
+                parsed.port
+            except ValueError:
+                valid = False
+            if not valid:
+                yield event.plain_result("尚未配置有效的外网链接，请管理员在插件配置中填写 web_public_url。")
+                return
+            yield event.plain_result(f"AI Galgame 网页入口：\n{public_url}")
+            return
         web_port = int(self.config.get("web_port", 0) or 0)
         url = (
             f"http://localhost:{web_port}"
@@ -307,6 +382,10 @@ class GalgamePlugin(
         GalgameWebHandler.jwt_token = ""
         GalgameWebHandler.jwt_token_factory = None
         GalgameWebHandler.web_password = ""
+        GalgameWebHandler.user_store = None
+        GalgameWebHandler.auth_configured = False
+        GalgameWebHandler.audio_owner_check = None
+        GalgameWebHandler.access_config = {}
         self.context.registered_web_apis[:] = [
             api
             for api in self.context.registered_web_apis

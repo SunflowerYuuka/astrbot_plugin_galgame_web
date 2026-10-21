@@ -1,4 +1,60 @@
 {
+  "web_public_url": {
+    "description": "外网网页链接（/galgame web）",
+    "type": "string",
+    "default": "",
+    "hint": "例如 https://galgame.example.com，/galgame web 会发送此链接。"
+  },
+  "platform_access_mode": {
+    "description": "聊天平台指令访问模式",
+    "type": "string",
+    "options": ["blacklist", "whitelist"],
+    "default": "blacklist",
+    "hint": "blacklist：除黑名单外允许使用；whitelist：仅白名单及管理员允许。黑名单始终优先。"
+  },
+  "platform_blacklist": {
+    "description": "平台用户黑名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID，例如 QQ 号。也可填写 aiocqhttp:123456 以限定平台。限制 Galgame 指令。"
+  },
+  "platform_whitelist": {
+    "description": "平台用户白名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID 或 平台名:用户ID，仅 whitelist 模式生效。"
+  },
+  "platform_admins": {
+    "description": "平台管理员名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写用户 ID 或 平台名:用户ID；可通过指令白名单，不会自动获得网页管理员权限。"
+  },
+  "web_access_mode": {
+    "description": "网页账号访问模式",
+    "type": "string",
+    "options": ["blacklist", "whitelist"],
+    "default": "blacklist",
+    "hint": "blacklist：除黑名单外允许使用；whitelist：仅白名单及管理员允许。黑名单始终优先。"
+  },
+  "web_blacklist": {
+    "description": "网页账号黑名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写网页账号名（小写），限制登录及已有登录状态的后续使用。"
+  },
+  "web_whitelist": {
+    "description": "网页账号白名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写网页账号名，仅 whitelist 模式生效。"
+  },
+  "web_admins": {
+    "description": "网页管理员名单",
+    "type": "list",
+    "default": [],
+    "hint": "填写已创建的网页账号名，授予账号管理及公共池审核权限；账号自身的管理员角色也有效。黑名单仍优先。"
+  },
   "character_name": {
     "description": "角色显示名",
     "type": "string",
@@ -24,10 +80,10 @@
     "hint": "开启后启动独立 HTTP 服务器。关闭则仅可通过 Dashboard 内嵌页访问。"
   },
   "web_password": {
-    "description": "独立 WebUI 访问密码",
+    "description": "独立 WebUI 初始管理员密码",
     "type": "string",
     "default": "",
-    "hint": "留空=无需密码。设置后访问独立 WebUI 需要输入密码才能使用。24 小时内无需重复输入。不影响 Dashboard 内嵌页。"
+    "hint": "首次启动且 users.json 不存在时，用此密码创建 admin 账号；之后请在「设置 → 账号管理」维护账号。留空且无账号时仅监听 127.0.0.1。不影响 Dashboard 内嵌页。"
   },
   "persona": {
     "description": "角色人格",

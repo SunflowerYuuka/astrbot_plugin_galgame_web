@@ -52,6 +52,7 @@ def test_no_password_forces_loopback_but_password_preserves_lan_access():
     assert resolve_web_bind_host("192.168.1.20", "") == "127.0.0.1"
     assert resolve_web_bind_host("0.0.0.0", "secret") == "0.0.0.0"
     assert resolve_web_bind_host("127.0.0.1", "") == "127.0.0.1"
+    assert resolve_web_bind_host("0.0.0.0", "", auth_configured=True) == "0.0.0.0"
 
 
 def test_auth_token_rejects_expired_and_future_timestamps(monkeypatch):

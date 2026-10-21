@@ -4,6 +4,8 @@ import uuid
 
 from quart import request
 
+from .identity import resolve_owner, session_audio_owned
+
 MAX_FAVORITES = 500
 MAX_FAVORITE_TEXT_CHARS = 20_000
 ALLOWED_AUDIO_MIMES = {
@@ -36,9 +38,15 @@ class FavoritesAPI:
         )
 
     async def _api_favorites_list(self):
-        return {"favorites": self._load_favorites()}
+        owner = resolve_owner(self)
+        if owner is None:
+            return {"error": "authentication required"}, 401
+        return {"favorites": self._load_favorites(owner)}
 
     async def _api_favorites_add(self):
+        owner = resolve_owner(self)
+        if owner is None:
+            return {"error": "authentication required"}, 401
         data = await request.get_json() or {}
         if not isinstance(data, dict):
             return {"error": "invalid request"}, 400
@@ -59,13 +67,19 @@ class FavoritesAPI:
         audio_path = safe_path(audio_file, AUDIO_DIR)
         if not audio_path or not audio_path.is_file():
             return {"error": "audio file not found"}, 404
+        if not session_audio_owned(self, owner, audio_file):
+            return {"error": "audio file not found"}, 404
         favs = self._load_favorites()
-        if len(favs) >= MAX_FAVORITES:
+        own_favs = [
+            f for f in favs if (f.get("owner") or "admin") == owner
+        ]
+        if len(own_favs) >= MAX_FAVORITES:
             return {"error": "favorite limit reached"}, 429
         favs.insert(
             0,
             {
                 "id": uuid.uuid4().hex,
+                "owner": owner,
                 "text": text,
                 "audio_file": audio_file,
                 "audio_mime": audio_mime,
@@ -76,6 +90,9 @@ class FavoritesAPI:
         return {"status": "ok"}
 
     async def _api_favorites_delete(self):
+        owner = resolve_owner(self)
+        if owner is None:
+            return {"error": "authentication required"}, 401
         data = await request.get_json() or {}
         if not isinstance(data, dict):
             return {"error": "invalid request"}, 400
@@ -84,18 +101,27 @@ class FavoritesAPI:
         if not fid:
             return {"error": "id required"}, 400
         favs = self._load_favorites()
-        orig_len = len(favs)
-        removed_favorites = [f for f in favs if f.get("id") == fid]
-        favs = [f for f in favs if f.get("id") != fid]
-        if len(favs) == orig_len:
+        removed_favorites = [
+            f
+            for f in favs
+            if f.get("id") == fid and (f.get("owner") or "admin") == owner
+        ]
+        kept = [
+            f
+            for f in favs
+            if not (
+                f.get("id") == fid and (f.get("owner") or "admin") == owner
+            )
+        ]
+        if not removed_favorites:
             return {"error": "not found"}, 404
-        self._save_favorites(favs)
+        self._save_favorites(kept)
         from ..galgame_web.session_helpers import cleanup_unreferenced_audio
 
         cleanup_unreferenced_audio(removed_favorites, self._sessions)
         return {"status": "ok"}
 
-    def _load_favorites(self) -> list[dict]:
+    def _load_favorites(self, owner: str | None = None) -> list[dict]:
         from ..galgame_web.assets_helpers import safe_path
         from ..galgame_web.session_helpers import AUDIO_DIR, FAVORITES_PATH
 
@@ -116,6 +142,12 @@ class FavoritesAPI:
                 cleaned.append(favorite)
         if len(cleaned) != len(favs):
             self._save_favorites(cleaned)
+        if owner is not None:
+            cleaned = [
+                favorite
+                for favorite in cleaned
+                if (favorite.get("owner") or "admin") == owner
+            ]
         return cleaned
 
     def _save_favorites(self, favs: list[dict]):

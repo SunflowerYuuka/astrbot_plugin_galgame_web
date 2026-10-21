@@ -48,6 +48,7 @@ async def push_through_pipeline(
         "selected_provider": selected_provider,
         "selected_model": None,
         "enable_streaming": False,
+        "enable_reasoning": False,
     }
     t1 = time.time()
     chat_queue = webchat_queue_mgr.get_or_create_queue(session_id)

@@ -2,6 +2,8 @@ import base64
 
 from quart import request
 
+from .identity import resolve_owner, session_audio_owned
+
 
 class AudioAPI:
     def _register_audio_apis(self):
@@ -17,9 +19,14 @@ class AudioAPI:
         from ..galgame_web.assets_helpers import safe_path
         from ..galgame_web.session_helpers import AUDIO_DIR
 
+        owner = resolve_owner(self)
+        if owner is None:
+            return {"error": "authentication required"}, 401
         filename = request.args.get("name", "")
         sp = safe_path(filename, AUDIO_DIR)
         if not sp or not sp.exists() or not sp.is_file():
+            return {"error": "not found"}, 404
+        if not session_audio_owned(self, owner, filename):
             return {"error": "not found"}, 404
         raw = sp.read_bytes()
         mime_map = {

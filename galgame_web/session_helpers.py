@@ -18,6 +18,7 @@ ASSETS_DIR = _DATA / "assets"
 BGM_DIR = _DATA / "bgm"
 FAVORITES_PATH = _DATA / "favorites.json"
 PREFS_PATH = _DATA / "prefs.json"
+PREFS_USERS_PATH = _DATA / "prefs_users.json"
 
 PLATFORM_ID = "webchat"
 SESSION_ID_PATTERN = re.compile(r"^[a-f0-9]{32}$")
@@ -60,7 +61,7 @@ def atomic_write_json(path: pathlib.Path, data) -> None:
 _atomic_write_json = atomic_write_json
 
 
-def load_prefs() -> dict:
+def _load_legacy_prefs() -> dict:
     if not PREFS_PATH.exists():
         return {}
     try:
@@ -70,8 +71,74 @@ def load_prefs() -> dict:
         return {}
 
 
-def save_prefs(data: dict):
-    atomic_write_json(PREFS_PATH, data)
+def _load_prefs_users() -> dict:
+    if not PREFS_USERS_PATH.exists():
+        return {"version": 1, "users": {}}
+    try:
+        loaded = json.loads(PREFS_USERS_PATH.read_text(encoding="utf-8")) or {}
+    except (OSError, json.JSONDecodeError):
+        return {"version": 1, "users": {}}
+    if not isinstance(loaded, dict):
+        return {"version": 1, "users": {}}
+    users = loaded.get("users")
+    if not isinstance(users, dict):
+        users = {}
+        loaded["users"] = users
+    loaded.setdefault("version", 1)
+    return loaded
+
+
+def load_prefs(user: str | None = None) -> dict:
+    if user is None:
+        return _load_legacy_prefs()
+    data = _load_prefs_users()
+    prefs = data["users"].get(user)
+    if isinstance(prefs, dict):
+        return dict(prefs)
+    if user == "admin":
+        return _load_legacy_prefs()
+    return {}
+
+
+def save_prefs(data_or_user: dict | str, data: dict | None = None):
+    if data is None:
+        user = None
+        prefs = data_or_user
+    else:
+        user = str(data_or_user)
+        prefs = data
+    if user is None:
+        atomic_write_json(PREFS_PATH, prefs)
+        return
+    store = _load_prefs_users()
+    store["users"][user] = prefs
+    atomic_write_json(PREFS_USERS_PATH, store)
+
+
+def delete_prefs(user: str) -> bool:
+    store = _load_prefs_users()
+    if user not in store["users"]:
+        return False
+    del store["users"][user]
+    atomic_write_json(PREFS_USERS_PATH, store)
+    return True
+
+
+def clear_bgm_file_pref(filename: str) -> int:
+    changed = 0
+    store = _load_prefs_users()
+    for prefs in store["users"].values():
+        if isinstance(prefs, dict) and prefs.get("bgm_file") == filename:
+            prefs["bgm_file"] = ""
+            changed += 1
+    if changed:
+        atomic_write_json(PREFS_USERS_PATH, store)
+    legacy = _load_legacy_prefs()
+    if legacy.get("bgm_file") == filename:
+        legacy["bgm_file"] = ""
+        atomic_write_json(PREFS_PATH, legacy)
+        changed += 1
+    return changed
 
 
 def concatenate_wav_files(paths: list[pathlib.Path], output: pathlib.Path) -> bool:
@@ -113,6 +180,7 @@ def save_session(sessions: dict[str, dict], session_id: str):
     data = {
         "umo": session.get("umo", ""),
         "conv_id": session.get("conv_id", ""),
+        "owner": session.get("owner", ""),
         "history": session["history"],
         "current_emotion": session["current_emotion"],
         "created_at": session["created_at"],
@@ -152,6 +220,9 @@ def load_session(session_id: str) -> dict | None:
             "conv_id": data.get("conv_id", "")
             if isinstance(data.get("conv_id", ""), str)
             else "",
+            "owner": data.get("owner", "")
+            if isinstance(data.get("owner", ""), str)
+            else "",
             "history": [
                 {**item, "id": item.get("id") or uuid.uuid4().hex}
                 for item in history
@@ -183,7 +254,9 @@ def load_session(session_id: str) -> dict | None:
         return None
 
 
-def load_all_sessions(sessions: dict[str, dict]) -> int:
+def load_all_sessions(
+    sessions: dict[str, dict], legacy_owner: str = ""
+) -> int:
     count = 0
     for path in SESSIONS_DIR.glob("*.json"):
         sid = path.stem
@@ -192,6 +265,9 @@ def load_all_sessions(sessions: dict[str, dict]) -> int:
         session = load_session(sid)
         if session:
             sessions[sid] = session
+            if legacy_owner and not session.get("owner"):
+                session["owner"] = legacy_owner
+                save_session(sessions, sid)
             count += 1
     if count:
         logger.info(f"Loaded {count} persisted sessions")
